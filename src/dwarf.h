@@ -233,6 +233,16 @@ extern "C" {
 #define DW_FORM_data16                  0x1e /* DWARF5 */
 #define DW_FORM_line_strp               0x1f /* DWARF5 */
 #define DW_FORM_ref_sig8                0x20 /* DWARF4 */
+#define DW_FORM_implicit_const          0x21 /* DWARF5 */
+
+#define DW_UT_compile                   0x01 /* DWARF5 */
+#define DW_UT_type                      0x02 /* DWARF5 */
+#define DW_UT_partial                   0x03 /* DWARF5 */
+#define DW_UT_skeleton                  0x04 /* DWARF5 */
+#define DW_UT_split_compile             0x05 /* DWARF5 */
+#define DW_UT_split_type                0x06 /* DWARF5 */
+#define DW_UT_lo_user                   0x80 /* DWARF5 */
+#define DW_UT_hi_user                   0xff /* DWARF5 */
 
 #define DW_AT_sibling                           0x01
 #define DW_AT_location                          0x02
