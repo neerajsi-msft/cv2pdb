@@ -467,7 +467,7 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 			case DW_FORM_sdata:          a.type = Const; a.cons = SLEB128(ptr); break;
 			case DW_FORM_udata:          a.type = Const; a.cons = LEB128(ptr); break;
 			case DW_FORM_string:         a.type = String; a.string = (const char*)ptr; ptr += strlen(a.string) + 1; break;
-            case DW_FORM_strp:           a.type = String; a.string = (const char*)(img->debug_str + RDsize(ptr, cu->isDWARF64() ? 8 : 4)); break;
+            case DW_FORM_strp:           a.type = String; a.string = (const char*)(img->debug_str.base + RDsize(ptr, cu->isDWARF64() ? 8 : 4)); break;
 			case DW_FORM_flag:           a.type = Flag; a.flag = (*ptr++ != 0); break;
 			case DW_FORM_flag_present:   a.type = Flag; a.flag = true; break;
 			case DW_FORM_ref1:           a.type = Ref; a.ref = (byte*)cu + *ptr++; break;
@@ -475,7 +475,7 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 			case DW_FORM_ref4:           a.type = Ref; a.ref = (byte*)cu + RD4(ptr); break;
 			case DW_FORM_ref8:           a.type = Ref; a.ref = (byte*)cu + RD8(ptr); break;
 			case DW_FORM_ref_udata:      a.type = Ref; a.ref = (byte*)cu + LEB128(ptr); break;
-			case DW_FORM_ref_addr:       a.type = Ref; a.ref = (byte*)img->debug_info + (cu->isDWARF64() ? RD8(ptr) : RD4(ptr)); break;
+			case DW_FORM_ref_addr:       a.type = Ref; a.ref = (byte*)img->debug_info.base + (cu->isDWARF64() ? RD8(ptr) : RD4(ptr)); break;
 			case DW_FORM_ref_sig8:       a.type = Invalid; ptr += 8;  break;
 			case DW_FORM_exprloc:        a.type = ExprLoc; a.expr.len = LEB128(ptr); a.expr.ptr = ptr; ptr += a.expr.len; break;
 			case DW_FORM_sec_offset:     a.type = SecOffset;  a.sec_offset = cu->isDWARF64() ? RD8(ptr) : RD4(ptr); break;
@@ -578,7 +578,7 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 
 byte* DIECursor::getDWARFAbbrev(unsigned off, unsigned findcode)
 {
-	if (!img->debug_abbrev)
+	if (!img->debug_abbrev.isPresent())
 		return 0;
 
 	std::pair<unsigned, unsigned> key = std::make_pair(off, findcode);
@@ -588,8 +588,8 @@ byte* DIECursor::getDWARFAbbrev(unsigned off, unsigned findcode)
 		return it->second;
 	}
 
-	byte* p = (byte*)img->debug_abbrev + off;
-	byte* end = (byte*)img->debug_abbrev + img->debug_abbrev_length;
+	byte* p = (byte*)img->debug_abbrev.base + off;
+	byte* end = (byte*)img->debug_abbrev.base + img->debug_abbrev.length;
 	while (p < end)
 	{
 		int code = LEB128(p);

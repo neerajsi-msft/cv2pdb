@@ -230,8 +230,8 @@ class CFICursor
 {
 public:
 	CFICursor(const PEImage& img)
-	: beg((byte*)img.debug_frame)
-	, end((byte*)img.debug_frame + img.debug_frame_length)
+	: beg((byte*)img.debug_frame.base)
+	, end((byte*)img.debug_frame.base + img.debug_frame.length)
 	, ptr(beg)
 	{
 		default_address_size = img.isX64() ? 8 : 4;
@@ -489,7 +489,7 @@ Location findBestCFA(const PEImage& img, const CFIIndex* index, unsigned int pcl
 {
 	bool x64 = img.isX64();
 	Location ebp = { Location::RegRel, x64 ? 6 : 5, x64 ? 16 : 8 };
-	if (!img.debug_frame)
+	if (!img.debug_frame.isPresent())
 		return ebp;
 
 	byte *fde_ptr = index->lookup(pclo, pchi);
@@ -529,8 +529,8 @@ class LOCCursor
 public:
 	LOCCursor(const PEImage& image, unsigned long off)
 	: img (image)
-	, end((byte*)img.debug_loc + img.debug_loc_length)
-	, ptr((byte*)img.debug_loc + off)
+	, end((byte*)img.debug_loc.base + img.debug_loc.length)
+	, ptr((byte*)img.debug_loc.base + off)
 	{
 		default_address_size = img.isX64() ? 8 : 4;
 	}
@@ -793,8 +793,8 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DWARF_CompilationUnit* cu, DIE
 						id.pchi = 0;
 
 						// TODO: handle base address selection
-						byte *r = (byte *)img.debug_ranges + id.ranges;
-						byte *rend = (byte *)img.debug_ranges + img.debug_ranges_length;
+						byte *r = (byte *)img.debug_ranges.base + id.ranges;
+						byte *rend = (byte *)img.debug_ranges.base + img.debug_ranges.length;
 						while (r < rend)
 						{
 							uint64_t pclo, pchi;
@@ -1122,7 +1122,7 @@ bool CV2PDB::addDWARFTypes()
 	checkUdtSymbolAlloc(100);
 
 	int prefix = 4;
-	DWORD* ddata = new DWORD [img.debug_info_length/4]; // large enough
+	DWORD* ddata = new DWORD [img.debug_info.length/4]; // large enough
 	unsigned char *data = (unsigned char*) (ddata + prefix);
 	unsigned int off = 0;
 	unsigned int len;
@@ -1350,9 +1350,9 @@ bool CV2PDB::mapTypes()
 {
 	int typeID = nextUserType;
 	unsigned long off = 0;
-	while (off < img.debug_info_length)
+	while (off < img.debug_info.length)
 	{
-		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info + off);
+		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info.base + off);
 
 		DIECursor cursor(cu, (byte*)cu + sizeof(DWARF_CompilationUnit));
 		DWARF_InfoData id;
@@ -1408,9 +1408,9 @@ bool CV2PDB::createTypes()
 	int pointerAttr = img.isX64() ? 0x1000C : 0x800A;
 
 	unsigned long off = 0;
-	while (off < img.debug_info_length)
+	while (off < img.debug_info.length)
 	{
-		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info + off);
+		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info.base + off);
 
 		DIECursor cursor(cu, (byte*)cu + sizeof(DWARF_CompilationUnit));
 		DWARF_InfoData id;
@@ -1497,8 +1497,8 @@ bool CV2PDB::createTypes()
 						else if (id.ranges != ~0)
 						{
 							entry_point = ~0;
-							byte* r = (byte*)img.debug_ranges + id.ranges;
-							byte* rend = (byte*)img.debug_ranges + img.debug_ranges_length;
+							byte* r = (byte*)img.debug_ranges.base + id.ranges;
+							byte* rend = (byte*)img.debug_ranges.base + img.debug_ranges.length;
 							while (r < rend)
 							{
 								uint64_t pclo, pchi;
@@ -1555,10 +1555,10 @@ bool CV2PDB::createTypes()
 #if !FULL_CONTRIB
 				if (id.dir && id.name)
 				{
-					if (id.ranges > 0 && id.ranges < img.debug_ranges_length)
+					if (id.ranges > 0 && id.ranges < img.debug_ranges.length)
 					{
-						unsigned char* r = (unsigned char*)img.debug_ranges + id.ranges;
-						unsigned char* rend = (unsigned char*)img.debug_ranges + img.debug_ranges_length;
+						unsigned char* r = (unsigned char*)img.debug_ranges.base + id.ranges;
+						unsigned char* rend = (unsigned char*)img.debug_ranges.base + img.debug_ranges.length;
 						while (r < rend)
 						{
 							unsigned long pclo = RD4(r);
@@ -1644,7 +1644,7 @@ bool CV2PDB::createTypes()
 
 bool CV2PDB::createDWARFModules()
 {
-	if(!img.debug_info)
+	if(!img.debug_info.isPresent())
 		return setError("no .debug_info section found");
 
 	codeSegOff = img.getImageBase() + img.getSection(img.codeSegment).VirtualAddress;
@@ -1725,7 +1725,7 @@ bool CV2PDB::createDWARFModules()
 
 bool CV2PDB::addDWARFLines()
 {
-	if(!img.debug_line)
+	if(!img.debug_line.isPresent())
 		return setError("no .debug_line section found");
 
     if (!interpretDWARFLines(img, globalMod()))
@@ -1759,7 +1759,7 @@ bool CV2PDB::writeDWARFImage(const TCHAR* opath)
 
 void CV2PDB::build_cfi_index()
 {
-	if (img.debug_frame == NULL)
+	if (!img.debug_frame.isPresent())
 		return;
 	cfi_index = new CFIIndex(img);
 }

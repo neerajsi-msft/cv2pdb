@@ -179,13 +179,13 @@ bool addLineInfo(const PEImage& img, mspdb::Mod* mod, DWARF_LineState& state)
 
 bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod)
 {
-	DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)img.debug_info;
+	DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)img.debug_info.base;
 	int ptrsize = cu ? cu->address_size : 4;
 
 	DWARF_LineNumberProgramHeader hdr5;
-	for(unsigned long off = 0; off < img.debug_line_length; )
+	for(unsigned long off = 0; off < img.debug_line.length; )
 	{
-		DWARF_LineNumberProgramHeader* hdrver = (DWARF_LineNumberProgramHeader*) (img.debug_line + off);
+		DWARF_LineNumberProgramHeader* hdrver = (DWARF_LineNumberProgramHeader*) (img.debug_line.base + off);
 		int length = hdrver->unit_length;
 		if(length < 0)
 			break;
@@ -285,7 +285,7 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod)
 							case DW_FORM_line_strp:
 							{
 								size_t offset = cu->isDWARF64() ? RD8(p) : RD4(p);
-								state.include_dirs.push_back(img.debug_line_str + offset);
+								state.include_dirs.push_back(img.debug_line_str.base + offset);
 								break;
 							}
 							case DW_FORM_string:
@@ -327,7 +327,7 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod)
 							case DW_FORM_line_strp:
 							{
 								size_t offset = cu->isDWARF64() ? RD8(p) : RD4(p);
-								fname.file_name = img.debug_line_str + offset;
+								fname.file_name = img.debug_line_str.base + offset;
 								break;
 							}
 							case DW_FORM_string:
@@ -387,7 +387,7 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod)
 					switch(excode)
 					{
 					case DW_LNE_end_sequence:
-						if((char*)p - img.debug_line >= 0xe4e0)
+						if((char*)p - img.debug_line.base >= 0xe4e0)
 							p = p;
 						state.end_sequence = true;
 						state.last_addr = state.address;
@@ -398,7 +398,7 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod)
 					case DW_LNE_set_address:
 					{
 						if (!mod && state.section == -1)
-							state.section = img.getRelocationInLineSegment((char*)p - img.debug_line);
+							state.section = img.getRelocationInLineSegment((char*)p - img.debug_line.base);
 						unsigned long adr = ptrsize == 8 ? RD8(p) : RD4(p);
 						state.address = adr;
 						state.op_index = 0;
