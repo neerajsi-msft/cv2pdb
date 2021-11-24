@@ -401,6 +401,7 @@ DIECursor DIECursor::getSubtreeCursor()
 
 bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 {
+fprintf(stderr, "%s:%d: HERE\n", __FILE__, __LINE__);
 	id.clear();
 
 	if (hasChild)
@@ -408,6 +409,7 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 
 	for (;;)
 	{
+fprintf(stderr, "%s:%d: HERE, level: %d, cu->version: %d\n", __FILE__, __LINE__, (int)level, (int)cu->version);
 		if (level == -1)
 			return false; // we were already at the end of the subtree
 
@@ -417,6 +419,7 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 		id.entryPtr = ptr;
 		id.entryOff = ptr - (byte*)cu;
 		id.code = LEB128(ptr);
+fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 		if (id.code == 0)
 		{
 			--level; // pop up one level
@@ -432,6 +435,7 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 	}
 
 	byte* abbrev = getDWARFAbbrev(cu->debug_abbrev_offset, id.code);
+// fprintf(stderr, "%s:%d: dwarf abbrev: %s\n", __FILE__, __LINE__, (const char *)abbrev);
 	assert(abbrev);
 	if (!abbrev)
 		return false;
@@ -479,6 +483,8 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 			case DW_FORM_ref_sig8:       a.type = Invalid; ptr += 8;  break;
 			case DW_FORM_exprloc:        a.type = ExprLoc; a.expr.len = LEB128(ptr); a.expr.ptr = ptr; ptr += a.expr.len; break;
 			case DW_FORM_sec_offset:     a.type = SecOffset;  a.sec_offset = cu->isDWARF64() ? RD8(ptr) : RD4(ptr); break;
+			case DW_FORM_line_strp:      a.type = String; a.string = (const char*)img->debug_line_str.base + (cu->isDWARF64() ? RD8(ptr) : RD4(ptr)); break;
+			case DW_FORM_implicit_const: a.type = Const; a.cons = LEB128(ptr); a.cons = LEB128(ptr); break;
 			case DW_FORM_indirect:
 			default: assert(false && "Unsupported DWARF attribute form"); return false;
 		}

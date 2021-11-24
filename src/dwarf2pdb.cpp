@@ -1352,9 +1352,11 @@ bool CV2PDB::mapTypes()
 	unsigned long off = 0;
 	while (off < img.debug_info.length)
 	{
-		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info.base + off);
+		char *p = img.debug_info.base + off;
+		DWARF_CompilationUnit cu5;
+		DWARF_CompilationUnit* cu = getCompilationUnit(p, cu5);
 
-		DIECursor cursor(cu, (byte*)cu + sizeof(DWARF_CompilationUnit));
+		DIECursor cursor(cu, (byte*)p);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
@@ -1407,17 +1409,20 @@ bool CV2PDB::createTypes()
 	int typeID = nextUserType;
 	int pointerAttr = img.isX64() ? 0x1000C : 0x800A;
 
+fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 	unsigned long off = 0;
 	while (off < img.debug_info.length)
 	{
-		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info.base + off);
+		char *p = img.debug_info.base + off;
+		DWARF_CompilationUnit cu5;
+		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)p;
 
-		DIECursor cursor(cu, (byte*)cu + sizeof(DWARF_CompilationUnit));
+		DIECursor cursor(cu, (byte*)p);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
-			//printf("0x%08x, level = %d, id.code = %d, id.tag = %d\n",
-			//    (unsigned char*)cu + id.entryOff - (unsigned char*)img.debug_info, cursor.level, id.code, id.tag);
+			fprintf(stderr, "0x%08x, level = %d, id.code = %d, id.tag = %d\n",
+			    (unsigned char*)cu + id.entryOff - (unsigned char*)img.debug_info.base, cursor.level, id.code, id.tag);
 
 			if (id.abstract_origin)
 				mergeAbstractOrigin(id, cu);
@@ -1523,6 +1528,7 @@ bool CV2PDB::createTypes()
 								entry_point = 0;
 						}
 
+fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)id.name, entry_point);
 						if (entry_point)
 							mod->AddPublic2(id.name, img.codeSegment + 1, entry_point - codeSegOff, 0);
 					}
@@ -1615,6 +1621,7 @@ bool CV2PDB::createTypes()
 							type = nextDwarfType++;
 						}
 						appendGlobalVar(id.name, type, seg + 1, segOff);
+fprintf(stderr, "%s:%d: AddPublic2 %s\n", __FILE__, __LINE__, (const char *)id.name);
 						int rc = mod->AddPublic2(id.name, seg + 1, segOff, type);
 					}
 				}
@@ -1738,6 +1745,7 @@ bool CV2PDB::addDWARFPublics()
 {
 	mspdb::Mod* mod = globalMod();
 
+fprintf(stderr, "%s:%d: DWARF Publics\n", __FILE__, __LINE__);
 	int type = 0;
 	int rc = mod->AddPublic2("public_all", img.codeSegment + 1, 0, 0x1000);
 	if (rc <= 0)

@@ -224,6 +224,7 @@ int T_main(int argc, TCHAR* argv[])
 		if(!cv2pdb.addDWARFLines())
 			fatal(SARG ": %s", pdbname, cv2pdb.getLastError());
 
+fprintf(stderr, "%s:%d: call DWARF Publics\n", __FILE__, __LINE__);
 		if (!cv2pdb.addDWARFPublics())
 			fatal(SARG ": %s", pdbname, cv2pdb.getLastError());
 

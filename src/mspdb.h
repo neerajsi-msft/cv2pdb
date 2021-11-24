@@ -518,6 +518,7 @@ struct DBI
 
     int AddPublic2(char const *name,unsigned short sec,long off,unsigned long type)
     {
+fprintf(stderr, "%s:%d: AddPublic2 %s\n", __FILE__, __LINE__, (const char *)name);
         if(vsVersion >= 10)
             return ((DBI_VS10*) &vs9)->AddPublic2(name, sec, off, type);
         return vs9.AddPublic2(name, sec, off, type);

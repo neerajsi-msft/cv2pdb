@@ -2981,6 +2981,7 @@ bool CV2PDB::addPublics()
 					char symname[kMaxNameLen];
 					dsym2c((BYTE*)sym->data_v1.p_name.name, sym->data_v1.p_name.namelen, symname, sizeof(symname));
 					int type = translateType(sym->data_v1.symtype);
+fprintf(stderr, "%s:%d: AddPublic2 %s\n", __FILE__, __LINE__, (const char *)symname);
 					if (mod)
 						rc = mod->AddPublic2(symname, sym->data_v1.segment, sym->data_v1.offset, type);
 					else
@@ -2997,6 +2998,7 @@ bool CV2PDB::addPublics()
 
 bool CV2PDB::initGlobalSymbols()
 {
+fprintf(stderr, "%s:%d, countEntries: %d\n", __FILE__, __LINE__, (int)countEntries);
 	for (int m = 0; m < countEntries; m++)
 	{
 		OMFDirEntry* entry = img.getCVEntry(m);
@@ -3368,6 +3370,7 @@ bool CV2PDB::writeSymbols(mspdb::Mod* mod, DWORD* data, int databytes, int prefi
 {
 	if (addGlobals && staticSymbols)
 		databytes = copySymbols(staticSymbols, cbStaticSymbols, (BYTE*) (data + prefix), databytes);
+fprintf(stderr, "addGlobals: %d, globalSymbols: %p\n", (int)addGlobals, (void *)globalSymbols);
 	if (addGlobals && globalSymbols)
 		databytes = copySymbols(globalSymbols, cbGlobalSymbols, (BYTE*) (data + prefix), databytes);
 	if (addGlobals && udtSymbols)
@@ -3431,6 +3434,7 @@ bool CV2PDB::addSymbols()
 
 		case sstStaticSym:
 		case sstGlobalSym:
+fprintf(stderr, "%s:%d: HERE!\n", __FILE__, __LINE__);
 			break; // handled in initGlobalSymbols
 		}
 	}
