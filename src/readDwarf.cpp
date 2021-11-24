@@ -483,6 +483,7 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 			case DW_FORM_ref_sig8:       a.type = Invalid; ptr += 8;  break;
 			case DW_FORM_exprloc:        a.type = ExprLoc; a.expr.len = LEB128(ptr); a.expr.ptr = ptr; ptr += a.expr.len; break;
 			case DW_FORM_sec_offset:     a.type = SecOffset;  a.sec_offset = cu->isDWARF64() ? RD8(ptr) : RD4(ptr); break;
+			case DW_FORM_line_strp:      a.type = String; a.string = (const char*)img->debug_line_str + (cu->isDWARF64() ? RD8(ptr) : RD4(ptr)); break;
 			case DW_FORM_indirect:
 			default: assert(false && "Unsupported DWARF attribute form"); return false;
 		}
