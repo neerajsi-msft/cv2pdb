@@ -177,9 +177,31 @@ bool addLineInfo(const PEImage& img, mspdb::Mod* mod, DWARF_LineState& state)
 	return true;
 }
 
+DWARF_CompilationUnit *getCompilationUnit(char *&offset, DWARF_CompilationUnit &cu5)
+{
+	DWARF_CompilationUnit *cu = (DWARF_CompilationUnit *)offset;
+	if (cu->version == 5) {
+		offset += sizeof(*cu);
+		return cu;
+	}
+
+	DWARF_CompilationUnit4 *cu4 = (DWARF_CompilationUnit4 *)offset;
+	cu = &cu5;
+	cu->unit_length = cu4->unit_length;
+	cu->version = cu4->version;
+	cu->unit_type = DW_UT_compile;
+	cu->address_size = cu4->address_size;
+	cu->debug_abbrev_offset = cu4->debug_abbrev_offset;
+
+	offset += sizeof(*cu4);
+	return cu;
+}
+
 bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod)
 {
-	DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)img.debug_info;
+	char *p = img.debug_info;
+	DWARF_CompilationUnit cu5;
+	DWARF_CompilationUnit* cu = getCompilationUnit(p, cu5);
 	int ptrsize = cu ? cu->address_size : 4;
 
 	DWARF_LineNumberProgramHeader hdr5;

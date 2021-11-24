@@ -1352,9 +1352,11 @@ bool CV2PDB::mapTypes()
 	unsigned long off = 0;
 	while (off < img.debug_info_length)
 	{
-		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info + off);
+		char *p = img.debug_info + off;
+		DWARF_CompilationUnit cu5;
+		DWARF_CompilationUnit* cu = getCompilationUnit(p, cu5);
 
-		DIECursor cursor(cu, (byte*)cu + sizeof(DWARF_CompilationUnit));
+		DIECursor cursor(cu, (byte*)p);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
@@ -1411,9 +1413,11 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 	unsigned long off = 0;
 	while (off < img.debug_info_length)
 	{
-		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)(img.debug_info + off);
+		char *p = img.debug_info + off;
+		DWARF_CompilationUnit cu5;
+		DWARF_CompilationUnit* cu = getCompilationUnit(p, cu5);
 
-		DIECursor cursor(cu, (byte*)cu + sizeof(DWARF_CompilationUnit));
+		DIECursor cursor(cu, (byte*)p);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
