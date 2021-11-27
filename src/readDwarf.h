@@ -93,7 +93,7 @@ struct DWARF_Attribute
 	AttrClass type;
 	union
 	{
-		unsigned long addr;
+		uint64_t addr;
 		struct { byte* ptr; unsigned len; } block;
 		unsigned long cons;
 		const char* string;

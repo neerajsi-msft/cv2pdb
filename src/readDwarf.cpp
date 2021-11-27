@@ -418,7 +418,7 @@ fprintf(stderr, "%s:%d: HERE, level: %d, cu->version: %d\n", __FILE__, __LINE__,
 			return false; // root of the tree does not have a null terminator, but we know the length
 
 		id.entryPtr = ptr;
-		id.entryOff = ptr - (byte*)cu;
+		id.entryOff = (unsigned int)(ptr - (byte*)cu);
 		id.code = LEB128(ptr);
 fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 		if (id.code == 0)
@@ -460,11 +460,11 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 		DWARF_Attribute a;
 		switch (form)
 		{
-			case DW_FORM_addr:           a.type = Addr; a.addr = (unsigned long)RDsize(ptr, cu->address_size); break;
+			case DW_FORM_addr:           a.type = Addr; a.addr = RDAddr(ptr); break;
 			case DW_FORM_addrx: {
 				auto p = resolveAddressIndex(LEB128(ptr));
 				a.type = Addr;
-				a.addr = (unsigned long)RDAddr(p);
+				a.addr = RDAddr(p);
 				break;
 			}
 			case DW_FORM_addrx1:

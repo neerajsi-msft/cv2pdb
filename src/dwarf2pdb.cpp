@@ -29,9 +29,11 @@ void CV2PDB::checkDWARFTypeAlloc(int size, int add)
 	{
 		//allocDwarfTypes += size + add;
 		allocDwarfTypes += allocDwarfTypes/2 + size + add;
-		dwarfTypes = (BYTE*) realloc(dwarfTypes, allocDwarfTypes);
-		if (dwarfTypes == nullptr)
-			__debugbreak();
+		auto newTypes = (BYTE*) realloc(dwarfTypes, allocDwarfTypes);
+		if (newTypes == nullptr)
+			throw std::bad_alloc();
+
+		dwarfTypes = newTypes;
 	}
 }
 
@@ -1605,7 +1607,7 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
-			fprintf(stderr, "0x%08x, level = %d, id.code = %d, id.tag = %d\n",
+			fprintf(stderr, "0x%08zx, level = %d, id.code = %d, id.tag = %d\n",
 			    (unsigned char*)cu + id.entryOff - (unsigned char*)img.debug_info.base, cursor.level, id.code, id.tag);
 
 			if (id.abstract_origin)
