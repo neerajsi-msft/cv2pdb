@@ -156,6 +156,7 @@ private:
 
 public:
 	//dwarf
+	PESection debug_addr;
 	PESection debug_info;
 	PESection debug_abbrev;
 	PESection debug_line;

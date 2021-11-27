@@ -477,6 +477,8 @@ void PEImage::initDWARFSegments()
 
 		if (strcmp(name, ".debug_info") == 0)
 			initSec(debug_info, sec[s]);
+		if (strcmp(name, ".debug_addr") == 0)
+			initSec(debug_addr, sec[s]);
 		if (strcmp(name, ".debug_abbrev") == 0)
 			initSec(debug_abbrev, sec[s]);
 		if (strcmp(name, ".debug_line") == 0)

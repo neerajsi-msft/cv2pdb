@@ -181,6 +181,7 @@ DWARF_CompilationUnit *getCompilationUnit(char *&offset, DWARF_CompilationUnit &
 {
 	DWARF_CompilationUnit *cu = (DWARF_CompilationUnit *)offset;
 	if (cu->version == 5) {
+		offset += sizeof(*cu);
 		return cu;
 	}
 
@@ -200,7 +201,7 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod)
 {
 	char *p = img.debug_info.base;
 	DWARF_CompilationUnit cu5;
-	DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)img.debug_info.base;
+	auto* cu = getCompilationUnit(p, cu5);
 	int ptrsize = cu ? cu->address_size : 4;
 
 	DWARF_LineNumberProgramHeader hdr5;

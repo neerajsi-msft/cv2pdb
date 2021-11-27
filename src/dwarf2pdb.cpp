@@ -519,6 +519,7 @@ public:
 	unsigned long beg_offset;
 	unsigned long end_offset;
 	Location loc;
+	bool isDefault;
 
 	bool eol() const { return beg_offset == 0 && end_offset == 0; }
 };
@@ -527,46 +528,155 @@ public:
 class LOCCursor
 {
 public:
-	LOCCursor(const PEImage& image, unsigned long off)
+	LOCCursor(const PEImage& image, const DIECursor& parent_, unsigned long off)
 	: img (image)
-	, end((byte*)img.debug_loc.base + img.debug_loc.length)
-	, ptr((byte*)img.debug_loc.base + off)
+	, parent(parent_)
 	{
+		isLocList = false;
+		if (parent.cu->version >= 5) {
+			isLocList = true;
+		}
+
+		if (isLocList)
+		{
+			ptr = (byte*)img.debug_loclists.base;
+			end = ptr + img.debug_loclists.length;
+			base = parent.cuOffsets->loclist_base_offset;
+			off += base;
+		}
+		else
+		{
+			ptr = (byte*)img.debug_loc.base;
+			end = ptr + img.debug_loc.length;
+			base = 0;
+		}
+
+		ptr += off;
 		default_address_size = img.isX64() ? 8 : 4;
 	}
 
 	const PEImage& img;
+	const DIECursor& parent;
 	byte* end;
 	byte* ptr;
+	unsigned long base;
 	byte default_address_size;
+	bool isLocList;
 
 	bool readNext(LOCEntry& entry)
 	{
 		if(ptr >= end)
 			return false;
-		entry.beg_offset = (unsigned long) RDsize(ptr, default_address_size);
-		entry.end_offset = (unsigned long) RDsize(ptr, default_address_size);
-		if (entry.eol())
-			return true;
+		if (isLocList)
+		{
+			while (ptr < end) {
+				byte type = *ptr++;
+				switch (type) {
+				case DW_LLE_end_of_list:
+					return false;
+				case DW_LLE_base_addressx:
+					if (auto* pBase = parent.resolveAddressIndex(LEB128(ptr))) {
+						base = parent.RDAddr(pBase);
+					}
+					continue;
+				case DW_LLE_startx_endx: {
+					auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
+					auto* pEnd = parent.resolveAddressIndex(LEB128(ptr));
+					if (pStart && pEnd) {
+						entry.beg_offset = base + parent.RDAddr(pStart);
+						entry.end_offset = base + parent.RDAddr(pEnd);
+						goto decode_counted_loc;
+					} else {
+						goto skip_counted_loc;
+					}
+				}
+				case DW_LLE_startx_length: {
+					auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
+					auto len = LEB128(ptr);
+					if (pStart) {
+						entry.beg_offset = base + parent.RDAddr(pStart);
+						entry.end_offset = entry.beg_offset + len;
+						goto decode_counted_loc;
+					} else {
+						goto skip_counted_loc;
+					}
+				}
+				case DW_LLE_offset_pair:
+				    entry.beg_offset = base + LEB128(ptr);
+				    entry.end_offset = base + LEB128(ptr);
+					goto decode_counted_loc;
 
-		DWARF_Attribute attr;
-		attr.type = Block;
-		attr.block.len = RD2(ptr);
-		attr.block.ptr = ptr;
-		entry.loc = decodeLocation(img, attr);
-		ptr += attr.expr.len;
-		return true;
+				case DW_LLE_default_location:
+					entry.beg_offset = 0;
+					entry.end_offset = 0;
+					entry.isDefault = true;
+					goto decode_counted_loc;
+
+				case DW_LLE_base_address:
+					base = LEB128(ptr);
+					continue;
+
+				case DW_LLE_start_end:
+					entry.beg_offset = parent.RDAddr(ptr);
+					entry.end_offset = parent.RDAddr(ptr);
+					goto decode_counted_loc;
+
+				case DW_LLE_start_length:
+					entry.beg_offset = parent.RDAddr(ptr);
+					entry.end_offset = entry.beg_offset + LEB128(ptr);
+					goto decode_counted_loc;
+
+				case DW_LLE_view_pair:
+					LEB128(ptr);
+					LEB128(ptr);
+					continue;
+
+				default:
+					assert(false && "unknown loclists value");
+					return false;
+				}
+skip_counted_loc:
+				auto len = LEB128(ptr);
+				ptr += len;
+			}
+
+decode_counted_loc:
+			auto len = LEB128(ptr);
+
+			DWARF_Attribute attr;
+			attr.type = Block;
+			attr.block.len = RD2(ptr);
+			attr.block.ptr = ptr;
+			entry.loc = decodeLocation(img, attr);
+			ptr += len;
+			return true;
+		}
+		else
+		{
+			entry.beg_offset = (unsigned long) RDsize(ptr, default_address_size);
+			entry.end_offset = (unsigned long) RDsize(ptr, default_address_size);
+			if (entry.eol())
+				return false;
+
+			DWARF_Attribute attr;
+			attr.type = Block;
+			attr.block.len = RD2(ptr);
+			attr.block.ptr = ptr;
+			entry.loc = decodeLocation(img, attr);
+			ptr += attr.expr.len;
+			return true;
+		}
 	}
 };
 
-Location findBestFBLoc(const PEImage& img, unsigned long fblocoff)
+Location findBestFBLoc(const PEImage& img, const DIECursor &parent, unsigned long fblocoff)
 {
 	int regebp = img.isX64() ? 6 : 5;
-	LOCCursor cursor(img, fblocoff);
+	LOCCursor cursor(img, parent, fblocoff);
 	LOCEntry entry;
 	Location longest = { Location::RegRel, DW_REG_CFA, 0 };
 	unsigned long longest_range = 0;
-	while(cursor.readNext(entry) && !entry.eol())
+	while(cursor.readNext(entry))
 	{
 		if(entry.loc.is_regrel() && entry.loc.reg == regebp)
 			return entry.loc;
@@ -691,7 +801,99 @@ void CV2PDB::appendLexicalBlock(DWARF_InfoData& id, unsigned int proclo)
 	cbUdtSymbols += len;
 }
 
-bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DWARF_CompilationUnit* cu, DIECursor cursor)
+template <typename TFunc>
+void CV2PDB::processRangeList(unsigned long offset, const DIECursor& parent, TFunc &&func)
+{
+	if (parent.cu->version < 5)
+	{
+		// TODO: handle base address selection
+		byte *r = (byte *)img.debug_ranges.base + offset;
+		byte *rend = (byte *)img.debug_ranges.base + img.debug_ranges.length;
+		while (r < rend)
+		{
+			uint64_t pclo = parent.RDAddr(r);
+			uint64_t pchi = parent.RDAddr(r);
+
+			if (!pclo && !pchi)
+			{
+				return;
+			}
+
+			if (pclo >= pchi)
+			{
+				continue;
+			}
+
+			func(pclo + currentBaseAddress, pchi + currentBaseAddress);
+		}
+	}
+	else
+	{
+		uint64_t pclo, pchi, base = currentBaseAddress;
+
+		byte *r = (byte *)img.debug_rnglists.base + offset;
+		byte *rend = r + img.debug_rnglists.length;
+
+		while (r < rend)
+		{
+			byte rle = *r++;
+			if (rle == DW_RLE_end_of_list)
+				break;
+
+			switch (rle)
+			{
+			case DW_RLE_start_length:
+				pclo = parent.RDAddr(r);
+				pchi = pclo + LEB128(r);
+				func(pclo + base, pchi + base);
+				break;
+			case DW_RLE_start_end:
+				pclo = parent.RDAddr(r);
+				pchi = parent.RDAddr(r);
+				func(pclo + base, pchi + base);
+				break;
+
+			case DW_RLE_base_address:
+				base = LEB128(r);
+				break;
+			case DW_RLE_base_addressx: {
+				if (auto* pBase = parent.resolveAddressIndex(LEB128(r))) {
+					base = parent.RDAddr(pBase);
+				}
+				break;
+			}
+			case DW_RLE_startx_endx: {
+				auto* pStart = parent.resolveAddressIndex(LEB128(r));
+				auto* pEnd = parent.resolveAddressIndex(LEB128(r));
+				if (pStart && pEnd) {
+					pclo = parent.RDAddr(pStart);
+					pchi = parent.RDAddr(pEnd);
+					func(pclo + base, pchi + base);
+				}
+			}
+			case DW_RLE_startx_length: {
+				auto* pStart = parent.resolveAddressIndex(LEB128(r));
+				auto len = LEB128(r);
+				if (pStart) {
+					pclo = parent.RDAddr(pStart);
+					pchi = pclo + len;
+					func(pclo + base, pchi + base);
+				}
+			}
+			case DW_RLE_offset_pair:
+				pclo = LEB128(r);
+				pchi = LEB128(r);
+				func(pclo + base, pchi + base);
+				break;
+			default:
+				assert(false && "unknown rnglists value");
+				return;
+			}
+		}
+	}
+}
+
+bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DIECursor cursor)
 {
 	unsigned int pclo = procid.pclo - codeSegOff;
 	unsigned int pchi = procid.pchi - codeSegOff;
@@ -745,11 +947,11 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DWARF_CompilationUnit* cu, DIE
 
 	Location frameBase = decodeLocation(img, procid.frame_base, 0, DW_AT_frame_base);
 	if (frameBase.is_abs()) // pointer into location list in .debug_loc? assume CFA
-		frameBase = findBestFBLoc(img, frameBase.off);
+		frameBase = findBestFBLoc(img, cursor, frameBase.off);
 
     Location cfa = findBestCFA(img, cfi_index, procid.pclo, procid.pchi);
 
-	if (cu)
+	if (cursor.cu)
 	{
 		bool endarg = false;
 		DWARF_InfoData id;
@@ -762,10 +964,10 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DWARF_CompilationUnit* cu, DIE
 			{
 				if (id.location.type == ExprLoc || id.location.type == Block || id.location.type == SecOffset)
 				{
-					Location loc = id.location.type == SecOffset ? findBestFBLoc(img, id.location.sec_offset)
+					Location loc = id.location.type == SecOffset ? findBestFBLoc(img, cursor, id.location.sec_offset)
 					                                             : decodeLocation(img, id.location, &frameBase);
 					if (loc.is_regrel())
-						appendStackVar(id.name, getTypeByDWARFPtr(cu, id.type), loc, cfa);
+						appendStackVar(id.name, getTypeByDWARFPtr(id.type), loc, cfa);
 				}
 			}
 		}
@@ -792,30 +994,12 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DWARF_CompilationUnit* cu, DIE
 						id.pclo = ~0;
 						id.pchi = 0;
 
-						// TODO: handle base address selection
-						byte *r = (byte *)img.debug_ranges.base + id.ranges;
-						byte *rend = (byte *)img.debug_ranges.base + img.debug_ranges.length;
-						while (r < rend)
+						processRangeList(id.ranges, cursor, [&id](uint64_t pclo, uint64_t pchi)
 						{
-							uint64_t pclo, pchi;
+							id.pclo = min(id.pclo, pclo);
+							id.pchi = max(id.pchi, pchi);
+						});
 
-							if (img.isX64())
-							{
-								pclo = RD8(r);
-								pchi = RD8(r);
-							}
-							else
-							{
-								pclo = RD4(r);
-								pchi = RD4(r);
-							}
-							if (pclo == 0 && pchi == 0)
-								break;
-							if (pclo >= pchi)
-								continue;
-							id.pclo = min(id.pclo, pclo + currentBaseAddress);
-							id.pchi = max(id.pchi, pchi + currentBaseAddress);
-						}
 					}
 
 					if (id.hasChild && id.pchi > id.pclo)
@@ -833,10 +1017,10 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DWARF_CompilationUnit* cu, DIE
 				{
 					if (id.name && (id.location.type == ExprLoc || id.location.type == Block))
 					{
-						Location loc = id.location.type == SecOffset ? findBestFBLoc(img, id.location.sec_offset)
+						Location loc = id.location.type == SecOffset ? findBestFBLoc(img, cursor, id.location.sec_offset)
 						                                             : decodeLocation(img, id.location, &frameBase);
 						if (loc.is_regrel())
-							appendStackVar(id.name, getTypeByDWARFPtr(cu, id.type), loc, cfa);
+							appendStackVar(id.name, getTypeByDWARFPtr(id.type), loc, cfa);
 					}
 				}
 				cursor.gotoSibling();
@@ -853,7 +1037,7 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DWARF_CompilationUnit* cu, DIE
 	return true;
 }
 
-int CV2PDB::addDWARFFields(DWARF_InfoData& structid, DWARF_CompilationUnit* cu, DIECursor cursor, int baseoff)
+int CV2PDB::addDWARFFields(DWARF_InfoData& structid, DIECursor cursor, int baseoff)
 {
 	bool isunion = structid.tag == DW_TAG_union_type;
 	int nfields = 0;
@@ -884,20 +1068,20 @@ int CV2PDB::addDWARFFields(DWARF_InfoData& structid, DWARF_CompilationUnit* cu, 
 				{
 					checkDWARFTypeAlloc(kMaxNameLen + 100);
 					codeview_fieldtype* dfieldtype = (codeview_fieldtype*)(dwarfTypes + cbDwarfTypes);
-					cbDwarfTypes += addFieldMember(dfieldtype, 0, baseoff + off, getTypeByDWARFPtr(cu, id.type), id.name);
+					cbDwarfTypes += addFieldMember(dfieldtype, 0, baseoff + off, getTypeByDWARFPtr(id.type), id.name);
 					nfields++;
 				}
 				else if (id.type)
 				{
 					// if it doesn't have a name, and it's a struct or union, embed it directly
-					DIECursor membercursor(cu, id.type);
+					DIECursor membercursor(cursor, id.type);
 					DWARF_InfoData memberid;
 					if (membercursor.readNext(memberid))
 					{
 						if (memberid.abstract_origin)
-							mergeAbstractOrigin(memberid, cu);
+							mergeAbstractOrigin(memberid, cursor);
 						if (memberid.specification)
-							mergeSpecification(memberid, cu);
+							mergeSpecification(memberid, cursor);
 
 						int cvtype = -1;
 						switch (memberid.tag)
@@ -905,7 +1089,7 @@ int CV2PDB::addDWARFFields(DWARF_InfoData& structid, DWARF_CompilationUnit* cu, 
 						case DW_TAG_class_type:
 						case DW_TAG_structure_type:
 						case DW_TAG_union_type:
-							nfields += addDWARFFields(memberid, cu, membercursor, baseoff + off);
+							nfields += addDWARFFields(memberid, membercursor, baseoff + off);
 							break;
 						}
 					}
@@ -927,7 +1111,7 @@ int CV2PDB::addDWARFFields(DWARF_InfoData& structid, DWARF_CompilationUnit* cu, 
 				codeview_fieldtype* bc = (codeview_fieldtype*)(dwarfTypes + cbDwarfTypes);
 				bc->bclass_v2.id = LF_BCLASS_V2;
 				bc->bclass_v2.offset = baseoff + off;
-				bc->bclass_v2.type = getTypeByDWARFPtr(cu, id.type);
+				bc->bclass_v2.type = getTypeByDWARFPtr(id.type);
 				bc->bclass_v2.attribute = 3; // public
 				cbDwarfTypes += sizeof(bc->bclass_v2);
 				for (; cbDwarfTypes & 3; cbDwarfTypes++)
@@ -940,13 +1124,13 @@ int CV2PDB::addDWARFFields(DWARF_InfoData& structid, DWARF_CompilationUnit* cu, 
 	return nfields;
 }
 
-int CV2PDB::addDWARFStructure(DWARF_InfoData& structid, DWARF_CompilationUnit* cu, DIECursor cursor)
+int CV2PDB::addDWARFStructure(DWARF_InfoData& structid, DIECursor cursor)
 {
 	//printf("Adding struct %s, entryoff %d, abbrev %d\n", structid.name, structid.entryOff, structid.abbrev);
 
 	int fieldlistType = 0;
 	int nfields = 0;
-	if (cu)
+	if (cursor.cu)
 	{
 		checkDWARFTypeAlloc(100);
 		codeview_reftype* fl = (codeview_reftype*) (dwarfTypes + cbDwarfTypes);
@@ -968,7 +1152,7 @@ int CV2PDB::addDWARFStructure(DWARF_InfoData& structid, DWARF_CompilationUnit* c
 			nfields++;
 		}
 #endif
-		nfields += addDWARFFields(structid, cu, cursor, 0);
+		nfields += addDWARFFields(structid, cursor, 0);
 		fl = (codeview_reftype*) (dwarfTypes + flbegin);
 		fl->fieldlist.len = cbDwarfTypes - flbegin - 2;
 		fieldlistType = nextDwarfType++;
@@ -988,19 +1172,18 @@ int CV2PDB::addDWARFStructure(DWARF_InfoData& structid, DWARF_CompilationUnit* c
 	return cvtype;
 }
 
-void CV2PDB::getDWARFArrayBounds(DWARF_InfoData& arrayid, DWARF_CompilationUnit* cu,
-								DIECursor cursor, int& basetype, int& lowerBound, int& upperBound)
+void CV2PDB::getDWARFArrayBounds(DWARF_InfoData& arrayid, DIECursor cursor, int& basetype, int& lowerBound, int& upperBound)
 {
 	DWARF_InfoData id;
 
 	// TODO: handle multi-dimensional arrays
-	if (cu)
+	if (cursor.cu)
 	{
 		while (cursor.readNext(id, true))
 		{
 			if (id.tag == DW_TAG_subrange_type)
 			{
-				getDWARFSubrangeInfo(id, cu, basetype, lowerBound, upperBound);
+				getDWARFSubrangeInfo(id, cursor, basetype, lowerBound, upperBound);
 				return;
 			}
 			cursor.gotoSibling();
@@ -1008,10 +1191,10 @@ void CV2PDB::getDWARFArrayBounds(DWARF_InfoData& arrayid, DWARF_CompilationUnit*
 	}
 
 	// In case of error, return plausible defaults
-	getDWARFSubrangeInfo(id, NULL, basetype, lowerBound, upperBound);
+	getDWARFSubrangeInfo(id, cursor, basetype, lowerBound, upperBound);
 }
 
-void CV2PDB::getDWARFSubrangeInfo(DWARF_InfoData& subrangeid, DWARF_CompilationUnit* cu,
+void CV2PDB::getDWARFSubrangeInfo(DWARF_InfoData& subrangeid, const DIECursor& parent,
 	int& basetype, int& lowerBound, int& upperBound)
 {
 	// In case of error, return plausible defaults. Assume the array
@@ -1020,10 +1203,10 @@ void CV2PDB::getDWARFSubrangeInfo(DWARF_InfoData& subrangeid, DWARF_CompilationU
 	lowerBound = currentDefaultLowerBound;
 	upperBound = lowerBound;
 
-	if (!cu || subrangeid.tag != DW_TAG_subrange_type)
+	if (!parent.cu || subrangeid.tag != DW_TAG_subrange_type)
 		return;
 
-	basetype = getTypeByDWARFPtr(cu, subrangeid.type);
+	basetype = getTypeByDWARFPtr(subrangeid.type);
 	if (subrangeid.has_lower_bound)
 		lowerBound = subrangeid.lower_bound;
 	upperBound = subrangeid.upper_bound;
@@ -1091,20 +1274,19 @@ int CV2PDB::getDWARFBasicType(int encoding, int byte_size)
 	return translateType(t);
 }
 
-int CV2PDB::addDWARFArray(DWARF_InfoData& arrayid, DWARF_CompilationUnit* cu,
-						  DIECursor cursor)
+int CV2PDB::addDWARFArray(DWARF_InfoData& arrayid, DIECursor cursor)
 {
 	int basetype, upperBound, lowerBound;
-	getDWARFArrayBounds(arrayid, cu, cursor, basetype, lowerBound, upperBound);
+	getDWARFArrayBounds(arrayid, cursor, basetype, lowerBound, upperBound);
 
 	checkUserTypeAlloc(kMaxNameLen + 100);
 	codeview_type* cvt = (codeview_type*) (userTypes + cbUserTypes);
 
 	cvt->array_v2.id = v3 ? LF_ARRAY_V3 : LF_ARRAY_V2;
-	cvt->array_v2.elemtype = getTypeByDWARFPtr(cu, arrayid.type);
+	cvt->array_v2.elemtype = getTypeByDWARFPtr(arrayid.type);
 	cvt->array_v2.idxtype = basetype;
 	int len = (BYTE*)&cvt->array_v2.arrlen - (BYTE*)cvt;
-	int size = (upperBound - lowerBound + 1) * getDWARFTypeSize(cu, arrayid.type);
+	int size = (upperBound - lowerBound + 1) * getDWARFTypeSize(cursor, arrayid.type);
 	len += write_numeric_leaf(size, &cvt->array_v2.arrlen);
 	((BYTE*)cvt)[len++] = 0; // empty name
 	for (; len & 3; len++)
@@ -1188,7 +1370,7 @@ int CV2PDB::addDWARFBasicType(const char*name, int encoding, int byte_size)
 	return cvtype;
 }
 
-int CV2PDB::addDWARFEnum(DWARF_InfoData& enumid, DWARF_CompilationUnit* cu, DIECursor cursor)
+int CV2PDB::addDWARFEnum(DWARF_InfoData& enumid, DIECursor cursor)
 {
 	/* Enumerated types are described in CodeView with two components:
 
@@ -1296,7 +1478,7 @@ int CV2PDB::addDWARFEnum(DWARF_InfoData& enumid, DWARF_CompilationUnit* cu, DIEC
 	/* Now the LF_FIELDLIST is ready, create the LF_ENUM type record itself. */
 	checkUserTypeAlloc();
 	int basetype = (enumid.type != 0)
-				   ? getTypeByDWARFPtr(cu, enumid.type)
+				   ? getTypeByDWARFPtr(enumid.type)
 				   : getDWARFBasicType(enumid.encoding, enumid.byte_size);
 	dtype = (codeview_type*)(userTypes + cbUserTypes);
 	const char* name = (enumid.name ? enumid.name : "__noname");
@@ -1307,7 +1489,7 @@ int CV2PDB::addDWARFEnum(DWARF_InfoData& enumid, DWARF_CompilationUnit* cu, DIEC
 	return enumType;
 }
 
-int CV2PDB::getTypeByDWARFPtr(DWARF_CompilationUnit* cu, byte* ptr)
+int CV2PDB::getTypeByDWARFPtr(byte* ptr)
 {
 	std::unordered_map<byte*, int>::iterator it = mapOffsetToType.find(ptr);
 	if(it == mapOffsetToType.end())
@@ -1315,10 +1497,10 @@ int CV2PDB::getTypeByDWARFPtr(DWARF_CompilationUnit* cu, byte* ptr)
 	return it->second;
 }
 
-int CV2PDB::getDWARFTypeSize(DWARF_CompilationUnit* cu, byte* typePtr)
+int CV2PDB::getDWARFTypeSize(const DIECursor& parent, byte* typePtr)
 {
 	DWARF_InfoData id;
-	DIECursor cursor(cu, typePtr);
+	DIECursor cursor(parent, typePtr);
 
 	if (!cursor.readNext(id))
 		return 0;
@@ -1331,16 +1513,16 @@ int CV2PDB::getDWARFTypeSize(DWARF_CompilationUnit* cu, byte* typePtr)
 		case DW_TAG_ptr_to_member_type:
 		case DW_TAG_reference_type:
 		case DW_TAG_pointer_type:
-			return cu->address_size;
+			return cursor.cu->address_size;
 		case DW_TAG_array_type:
 		{
 			int basetype, upperBound, lowerBound;
-			getDWARFArrayBounds(id, cu, cursor, basetype, lowerBound, upperBound);
-			return (upperBound - lowerBound + 1) * getDWARFTypeSize(cu, id.type);
+			getDWARFArrayBounds(id, cursor, basetype, lowerBound, upperBound);
+			return (upperBound - lowerBound + 1) * getDWARFTypeSize(cursor, id.type);
 		}
 		default:
 			if(id.type)
-				return getDWARFTypeSize(cu, id.type);
+				return getDWARFTypeSize(cursor, id.type);
 			break;
 	}
 	return 0;
@@ -1355,8 +1537,9 @@ bool CV2PDB::mapTypes()
 		char *p = img.debug_info.base + off;
 		DWARF_CompilationUnit cu5;
 		DWARF_CompilationUnit* cu = getCompilationUnit(p, cu5);
+		CompilationUnitOffsets offsets{};
 
-		DIECursor cursor(cu, (byte*)p);
+		DIECursor cursor(cu, &offsets, (byte*)p);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
@@ -1415,9 +1598,10 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 	{
 		char *p = img.debug_info.base + off;
 		DWARF_CompilationUnit cu5;
-		DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)p;
+		DWARF_CompilationUnit* cu = getCompilationUnit(p, cu5);
+		CompilationUnitOffsets offsets{};
 
-		DIECursor cursor(cu, (byte*)p);
+		DIECursor cursor(cu, &offsets, (byte*)p);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
@@ -1425,9 +1609,9 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 			    (unsigned char*)cu + id.entryOff - (unsigned char*)img.debug_info.base, cursor.level, id.code, id.tag);
 
 			if (id.abstract_origin)
-				mergeAbstractOrigin(id, cu);
+				mergeAbstractOrigin(id, cursor);
 			if (id.specification)
-				mergeSpecification(id, cu);
+				mergeSpecification(id, cursor);
 
 			int cvtype = -1;
 			switch (id.tag)
@@ -1436,36 +1620,36 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 				cvtype = addDWARFBasicType(id.name, id.encoding, id.byte_size);
 				break;
 			case DW_TAG_typedef:
-				cvtype = appendModifierType(getTypeByDWARFPtr(cu, id.type), 0);
+				cvtype = appendModifierType(getTypeByDWARFPtr(id.type), 0);
 				addUdtSymbol(cvtype, id.name);
 				break;
 			case DW_TAG_pointer_type:
-				cvtype = appendPointerType(getTypeByDWARFPtr(cu, id.type), pointerAttr);
+				cvtype = appendPointerType(getTypeByDWARFPtr(id.type), pointerAttr);
 				break;
 			case DW_TAG_const_type:
-				cvtype = appendModifierType(getTypeByDWARFPtr(cu, id.type), 1);
+				cvtype = appendModifierType(getTypeByDWARFPtr(id.type), 1);
 				break;
 			case DW_TAG_reference_type:
-				cvtype = appendPointerType(getTypeByDWARFPtr(cu, id.type), pointerAttr | 0x20);
+				cvtype = appendPointerType(getTypeByDWARFPtr(id.type), pointerAttr | 0x20);
 				break;
 
 			case DW_TAG_subrange_type:
 				// It seems we cannot materialize bounds for scalar types in
 				// CodeView, so just redirect to a mere base type.
-				cvtype = appendModifierType(getTypeByDWARFPtr(cu, id.type), 0);
+				cvtype = appendModifierType(getTypeByDWARFPtr(id.type), 0);
 				break;
 
 			case DW_TAG_class_type:
 			case DW_TAG_structure_type:
 			case DW_TAG_union_type:
-				cvtype = addDWARFStructure(id, cu, cursor.getSubtreeCursor());
+				cvtype = addDWARFStructure(id, cursor.getSubtreeCursor());
 				break;
 			case DW_TAG_array_type:
-				cvtype = addDWARFArray(id, cu, cursor.getSubtreeCursor());
+				cvtype = addDWARFArray(id, cursor.getSubtreeCursor());
 				break;
 
 			case DW_TAG_enumeration_type:
-				cvtype = addDWARFEnum(id, cu, cursor.getSubtreeCursor());
+				cvtype = addDWARFEnum(id, cursor.getSubtreeCursor());
 				break;
 
 			case DW_TAG_subroutine_type:
@@ -1502,28 +1686,11 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 						else if (id.ranges != ~0)
 						{
 							entry_point = ~0;
-							byte* r = (byte*)img.debug_ranges.base + id.ranges;
-							byte* rend = (byte*)img.debug_ranges.base + img.debug_ranges.length;
-							while (r < rend)
+							processRangeList(id.ranges, cursor, [&entry_point](uint64_t pclo, uint64_t)
 							{
-								uint64_t pclo, pchi;
+								entry_point = min(entry_point, pclo);
+							});
 
-								if (img.isX64())
-								{
-									pclo = RD8(r);
-									pchi = RD8(r);
-								}
-								else
-								{
-									pclo = RD4(r);
-									pchi = RD4(r);
-								}
-								if (pclo == 0 && pchi == 0)
-									break;
-								if (pclo >= pchi)
-									continue;
-								entry_point = min(entry_point, pclo + currentBaseAddress);
-							}
 							if (entry_point == ~0)
 								entry_point = 0;
 						}
@@ -1534,12 +1701,14 @@ fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)
 					}
 
 					if (id.pclo && id.pchi)
-						addDWARFProc(id, cu, cursor.getSubtreeCursor());
+						addDWARFProc(id, cursor.getSubtreeCursor());
 				}
 				break;
 
 			case DW_TAG_compile_unit:
 				currentBaseAddress = id.pclo;
+				offsets.low_pc = id.pclo;
+
 				switch (id.language)
 				{
 				case DW_LANG_Ada83:
@@ -1561,27 +1730,18 @@ fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)
 #if !FULL_CONTRIB
 				if (id.dir && id.name)
 				{
-					if (id.ranges > 0 && id.ranges < img.debug_ranges.length)
-					{
-						unsigned char* r = (unsigned char*)img.debug_ranges.base + id.ranges;
-						unsigned char* rend = (unsigned char*)img.debug_ranges.base + img.debug_ranges.length;
-						while (r < rend)
-						{
-							unsigned long pclo = RD4(r);
-							unsigned long pchi = RD4(r);
-							if (pclo == 0 && pchi == 0)
-								break;
-							//printf("%s %s %x - %x\n", dir, name, pclo, pchi);
-							if (!addDWARFSectionContrib(mod, pclo, pchi))
-								return false;
-						}
-					}
-					else
+					if (id.ranges == 0)
 					{
 						//printf("%s %s %x - %x\n", dir, name, pclo, pchi);
 						if (!addDWARFSectionContrib(mod, id.pclo, id.pchi))
 							return false;
+						break;
 					}
+
+					processRangeList(id.ranges, cursor, [this, mod](uint64_t pclo, uint64_t pchi)
+					{
+						addDWARFSectionContrib(mod, pclo - currentBaseAddress, pchi - currentBaseAddress);
+					});
 				}
 #endif
 				break;
@@ -1613,7 +1773,7 @@ fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)
 					}
 					if (seg >= 0)
 					{
-						int type = getTypeByDWARFPtr(cu, id.type);
+						int type = getTypeByDWARFPtr(id.type);
 						if (dllimport)
 						{
 							checkDWARFTypeAlloc(100);

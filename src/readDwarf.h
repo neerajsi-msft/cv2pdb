@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include "mspdb.h"
 
 typedef unsigned char byte;
@@ -395,24 +396,53 @@ struct Location
 };
 
 class PEImage;
+class DIECursor;
+
+struct CompilationUnitOffsets
+{
+	unsigned long str_base_offset;
+	unsigned long addr_base_offset;
+	unsigned long loclist_base_offset;
+	unsigned long low_pc;
+};
 
 // Attempts to partially evaluate DWARF location expressions.
 // The only supported expressions are those, whose result may be represented
 // as either an absolute value, a register, or a register-relative address.
 Location decodeLocation(const PEImage& img, const DWARF_Attribute& attr, const Location* frameBase = 0, int at = 0);
 
-void mergeAbstractOrigin(DWARF_InfoData& id, DWARF_CompilationUnit* cu);
-void mergeSpecification(DWARF_InfoData& id, DWARF_CompilationUnit* cu);
+void mergeAbstractOrigin(DWARF_InfoData& id, const DIECursor& parent);
+void mergeSpecification(DWARF_InfoData& id, const DIECursor& parent);
+
+// declare hasher for pair<T1,T2>
+namespace std
+{
+template<typename T1, typename T2>
+struct hash<std::pair<T1, T2>>
+{
+	size_t operator()(const std::pair<T1, T2>& t) const
+	{
+		return std::hash<T1>()(t.first) ^ std::hash<T2>()(t.second);
+	}
+};
+}
+
+typedef std::unordered_map<std::pair<unsigned, unsigned>, byte*> abbrevMap_t;
+
 
 // Debug Information Entry Cursor
 class DIECursor
 {
 public:
 	DWARF_CompilationUnit* cu;
+	CompilationUnitOffsets *cuOffsets;
 	byte* ptr;
 	int level;
 	bool hasChild; // indicates whether the last read DIE has children
 	byte* sibling;
+
+	static PEImage* img;
+	static abbrevMap_t abbrevMap;
 
 	byte* getDWARFAbbrev(unsigned off, unsigned findcode);
 
@@ -421,7 +451,10 @@ public:
 	static void setContext(PEImage* img_);
 
 	// Create a new DIECursor
-	DIECursor(DWARF_CompilationUnit* cu_, byte* ptr);
+	DIECursor(DWARF_CompilationUnit* cu_, CompilationUnitOffsets* cuOffsets_, byte* ptr_);
+
+	// Create a child DIECursor
+	DIECursor(const DIECursor& parent, byte* ptr_);
 
 	// Goto next sibling DIE.  If the last read DIE had any children, they will be skipped over.
 	void gotoSibling();
@@ -437,6 +470,18 @@ public:
 	// If stopAtNull is true, readNext() will stop upon reaching a null DIE (end of the current tree level).
 	// Otherwise, it will skip null DIEs and stop only at the end of the subtree for which this DIECursor was created.
 	bool readNext(DWARF_InfoData& id, bool stopAtNull = false);
+
+	// Resolves an indirect address reference to an absolute address.
+	byte* resolveAddressIndex(unsigned long idx) const;
+
+	// Read an address from p according to the ambient pointer size.
+	uint64_t RDAddr(byte* &p) const
+	{
+		if (cu->address_size == 4)
+			return RD4(p);
+
+		return RD8(p);
+	}
 };
 
 DWARF_CompilationUnit *getCompilationUnit(char *&offset, DWARF_CompilationUnit &cu5);

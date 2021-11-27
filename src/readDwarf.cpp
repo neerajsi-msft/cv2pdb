@@ -1,6 +1,5 @@
 #include "readDwarf.h"
 #include <assert.h>
-#include <unordered_map>
 #include <array>
 #include <windows.h>
 
@@ -292,51 +291,36 @@ Location decodeLocation(const PEImage& img, const DWARF_Attribute& attr, const L
 	return stack[0];
 }
 
-void mergeAbstractOrigin(DWARF_InfoData& id, DWARF_CompilationUnit* cu)
+void mergeAbstractOrigin(DWARF_InfoData& id, const DIECursor& parent)
 {
-	DIECursor specCursor(cu, id.abstract_origin);
+	DIECursor specCursor(parent, id.abstract_origin);
 	DWARF_InfoData idspec;
 	specCursor.readNext(idspec);
 	// assert seems invalid, combination DW_TAG_member and DW_TAG_variable found in the wild
 	// assert(id.tag == idspec.tag);
 	if (idspec.abstract_origin)
-		mergeAbstractOrigin(idspec, cu);
+		mergeAbstractOrigin(idspec, parent);
 	if (idspec.specification)
-		mergeSpecification(idspec, cu);
+		mergeSpecification(idspec, parent);
 	id.merge(idspec);
 }
 
-void mergeSpecification(DWARF_InfoData& id, DWARF_CompilationUnit* cu)
+void mergeSpecification(DWARF_InfoData& id, const DIECursor& parent)
 {
-	DIECursor specCursor(cu, id.specification);
+	DIECursor specCursor(parent, id.specification);
 	DWARF_InfoData idspec;
 	specCursor.readNext(idspec);
 	//assert seems invalid, combination DW_TAG_member and DW_TAG_variable found in the wild
 	//assert(id.tag == idspec.tag);
 	if (idspec.abstract_origin)
-		mergeAbstractOrigin(idspec, cu);
+		mergeAbstractOrigin(idspec, parent);
 	if (idspec.specification)
-		mergeSpecification(idspec, cu);
+		mergeSpecification(idspec, parent);
 	id.merge(idspec);
 }
 
-// declare hasher for pair<T1,T2>
-namespace std
-{
-	template<typename T1, typename T2>
-	struct hash<std::pair<T1, T2>>
-	{
-		size_t operator()(const std::pair<T1, T2>& t) const
-		{
-			return std::hash<T1>()(t.first) ^ std::hash<T2>()(t.second);
-		}
-	};
-}
-
-typedef std::unordered_map<std::pair<unsigned, unsigned>, byte*> abbrevMap_t;
-
-static PEImage* img;
-static abbrevMap_t abbrevMap;
+PEImage* DIECursor::img;
+abbrevMap_t DIECursor::abbrevMap;
 
 void DIECursor::setContext(PEImage* img_)
 {
@@ -344,16 +328,33 @@ void DIECursor::setContext(PEImage* img_)
 	abbrevMap.clear();
 }
 
+byte* DIECursor::resolveAddressIndex(unsigned long idx) const
+{
+	auto addrSize = cu->address_size == 4 ? 4 : 8;
+	auto offset = cuOffsets->addr_base_offset + addrSize * idx;
+	if (offset + addrSize >= img->debug_addr.length) {
+		assert(false && "invalid addr index");
+		return nullptr;
+	}
 
-DIECursor::DIECursor(DWARF_CompilationUnit* cu_, byte* ptr_)
+	return (byte*)img->debug_addr.base + offset;
+}
+
+DIECursor::DIECursor(DWARF_CompilationUnit* cu_, CompilationUnitOffsets *cuOffsets_, byte* ptr_)
 {
 	cu = cu_;
+	cuOffsets = cuOffsets_;
 	ptr = ptr_;
 	level = 0;
 	hasChild = false;
 	sibling = 0;
 }
 
+DIECursor::DIECursor(const DIECursor& parent, byte* ptr_)
+	: DIECursor(parent)
+{
+	ptr = ptr_;
+}
 
 void DIECursor::gotoSibling()
 {
@@ -460,6 +461,21 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 		switch (form)
 		{
 			case DW_FORM_addr:           a.type = Addr; a.addr = (unsigned long)RDsize(ptr, cu->address_size); break;
+			case DW_FORM_addrx: {
+				auto p = resolveAddressIndex(LEB128(ptr));
+				a.type = Addr;
+				a.addr = (unsigned long)RDAddr(p);
+				break;
+			}
+			case DW_FORM_addrx1:
+			case DW_FORM_addrx2:
+			case DW_FORM_addrx3:
+			case DW_FORM_addrx4: {
+				auto p = resolveAddressIndex(LEB128(ptr));
+				a.type = Addr;
+				a.addr = RDsize(p, 1 + (form - DW_FORM_addrx1));
+				break;
+			}
 			case DW_FORM_block:          a.type = Block; a.block.len = LEB128(ptr); a.block.ptr = ptr; ptr += a.block.len; break;
 			case DW_FORM_block1:         a.type = Block; a.block.len = *ptr++;      a.block.ptr = ptr; ptr += a.block.len; break;
 			case DW_FORM_block2:         a.type = Block; a.block.len = RD2(ptr);   a.block.ptr = ptr; ptr += a.block.len; break;
@@ -568,6 +584,9 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 					break;
 				}
 				break;
+			case DW_AT_str_offsets_base: assert(a.type == SecOffset); this->cuOffsets->str_base_offset = a.sec_offset; break;
+			case DW_AT_addr_base: assert(a.type == SecOffset); this->cuOffsets->addr_base_offset = a.sec_offset; break;
+			case DW_AT_loclists_base: assert(a.type == SecOffset); this->cuOffsets->loclist_base_offset = a.sec_offset; break;
 		    case DW_AT_artificial:
 				assert(a.type == Flag);
 				id.has_artificial = true;
