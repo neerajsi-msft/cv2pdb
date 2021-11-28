@@ -635,6 +635,8 @@ byte* DIECursor::getDWARFAbbrev(unsigned off, unsigned findcode)
 		{
 			attr = LEB128(p);
 			form = LEB128(p);
+			if (form == DW_FORM_implicit_const)
+				LEB128(p);
 		} while (attr || form);
 	}
 	return 0;
