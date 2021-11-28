@@ -8,6 +8,8 @@
 #include "mspdb.h"
 
 typedef unsigned char byte;
+class PEImage;
+class DIECursor;
 
 inline unsigned int LEB128(byte* &p)
 {
@@ -81,6 +83,7 @@ enum AttrClass
 	Addr,
 	Block,
 	Const,
+	Const16,
 	String,
 	Flag,
 	Ref,
@@ -96,6 +99,7 @@ struct DWARF_Attribute
 		uint64_t addr;
 		struct { byte* ptr; unsigned len; } block;
 		unsigned long cons;
+		byte cons16[16];
 		const char* string;
 		bool flag;
 		byte* ref;
@@ -151,7 +155,7 @@ struct DWARF_FileName
 struct DWARF_InfoData
 {
 	byte* entryPtr;
-	unsigned entryOff; // offset in the cu
+	unsigned entryOff; // offset in the debug_info section
 	int code;
 	byte* abbrev;
 	int tag;
@@ -395,8 +399,63 @@ struct Location
 	bool is_regrel() const { return type == RegRel; }
 };
 
-class PEImage;
-class DIECursor;
+// Range list entry
+struct RNGEntry
+{
+	uint64_t pclo;
+	uint64_t pchi;
+
+	void addBase(uint64_t base)
+	{
+		pclo += base;
+		pchi += base;
+	}
+};
+
+// Range list cursor
+class RNGCursor {
+public:
+	RNGCursor(const DIECursor& parent_, unsigned long off);
+
+	const DIECursor& parent;
+	byte* end;
+	byte* ptr;
+	unsigned long base;
+	byte default_address_size;
+	bool isRngLists;
+
+	bool readNext(RNGEntry& entry);
+};
+
+
+// Location list entry
+class LOCEntry
+{
+public:
+	byte* ptr;
+	unsigned long beg_offset;
+	unsigned long end_offset;
+	Location loc;
+	bool isDefault;
+
+	bool eol() const { return beg_offset == 0 && end_offset == 0; }
+};
+
+// Location list cursor
+class LOCCursor
+{
+public:
+	LOCCursor(const DIECursor& parent_, unsigned long off);
+
+	const DIECursor& parent;
+	byte* end;
+	byte* ptr;
+	unsigned long base;
+	byte default_address_size;
+	bool isLocLists;
+
+	bool readNext(LOCEntry& entry);
+};
 
 struct CompilationUnitOffsets
 {

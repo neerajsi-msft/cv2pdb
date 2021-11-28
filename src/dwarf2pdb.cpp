@@ -513,168 +513,10 @@ Location findBestCFA(const PEImage& img, const CFIIndex* index, unsigned int pcl
 	return ebp;
 }
 
-// Location list entry
-class LOCEntry
-{
-public:
-	byte* ptr;
-	unsigned long beg_offset;
-	unsigned long end_offset;
-	Location loc;
-	bool isDefault;
-
-	bool eol() const { return beg_offset == 0 && end_offset == 0; }
-};
-
-// Location list cursor
-class LOCCursor
-{
-public:
-	LOCCursor(const PEImage& image, const DIECursor& parent_, unsigned long off)
-	: img (image)
-	, parent(parent_)
-	{
-		isLocList = false;
-		if (parent.cu->version >= 5) {
-			isLocList = true;
-		}
-
-		if (isLocList)
-		{
-			ptr = (byte*)img.debug_loclists.base;
-			end = ptr + img.debug_loclists.length;
-			base = parent.cuOffsets->loclist_base_offset;
-			off += base;
-		}
-		else
-		{
-			ptr = (byte*)img.debug_loc.base;
-			end = ptr + img.debug_loc.length;
-			base = 0;
-		}
-
-		ptr += off;
-		default_address_size = img.isX64() ? 8 : 4;
-	}
-
-	const PEImage& img;
-	const DIECursor& parent;
-	byte* end;
-	byte* ptr;
-	unsigned long base;
-	byte default_address_size;
-	bool isLocList;
-
-	bool readNext(LOCEntry& entry)
-	{
-		if(ptr >= end)
-			return false;
-		if (isLocList)
-		{
-			while (ptr < end) {
-				byte type = *ptr++;
-				switch (type) {
-				case DW_LLE_end_of_list:
-					return false;
-				case DW_LLE_base_addressx:
-					if (auto* pBase = parent.resolveAddressIndex(LEB128(ptr))) {
-						base = parent.RDAddr(pBase);
-					}
-					continue;
-				case DW_LLE_startx_endx: {
-					auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
-					auto* pEnd = parent.resolveAddressIndex(LEB128(ptr));
-					if (pStart && pEnd) {
-						entry.beg_offset = base + parent.RDAddr(pStart);
-						entry.end_offset = base + parent.RDAddr(pEnd);
-						goto decode_counted_loc;
-					} else {
-						goto skip_counted_loc;
-					}
-				}
-				case DW_LLE_startx_length: {
-					auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
-					auto len = LEB128(ptr);
-					if (pStart) {
-						entry.beg_offset = base + parent.RDAddr(pStart);
-						entry.end_offset = entry.beg_offset + len;
-						goto decode_counted_loc;
-					} else {
-						goto skip_counted_loc;
-					}
-				}
-				case DW_LLE_offset_pair:
-				    entry.beg_offset = base + LEB128(ptr);
-				    entry.end_offset = base + LEB128(ptr);
-					goto decode_counted_loc;
-
-				case DW_LLE_default_location:
-					entry.beg_offset = 0;
-					entry.end_offset = 0;
-					entry.isDefault = true;
-					goto decode_counted_loc;
-
-				case DW_LLE_base_address:
-					base = LEB128(ptr);
-					continue;
-
-				case DW_LLE_start_end:
-					entry.beg_offset = parent.RDAddr(ptr);
-					entry.end_offset = parent.RDAddr(ptr);
-					goto decode_counted_loc;
-
-				case DW_LLE_start_length:
-					entry.beg_offset = parent.RDAddr(ptr);
-					entry.end_offset = entry.beg_offset + LEB128(ptr);
-					goto decode_counted_loc;
-
-				case DW_LLE_view_pair:
-					LEB128(ptr);
-					LEB128(ptr);
-					continue;
-
-				default:
-					assert(false && "unknown loclists value");
-					return false;
-				}
-skip_counted_loc:
-				auto len = LEB128(ptr);
-				ptr += len;
-			}
-
-decode_counted_loc:
-			auto len = LEB128(ptr);
-
-			DWARF_Attribute attr;
-			attr.type = Block;
-			attr.block.len = RD2(ptr);
-			attr.block.ptr = ptr;
-			entry.loc = decodeLocation(img, attr);
-			ptr += len;
-			return true;
-		}
-		else
-		{
-			entry.beg_offset = (unsigned long) RDsize(ptr, default_address_size);
-			entry.end_offset = (unsigned long) RDsize(ptr, default_address_size);
-			if (entry.eol())
-				return false;
-
-			DWARF_Attribute attr;
-			attr.type = Block;
-			attr.block.len = RD2(ptr);
-			attr.block.ptr = ptr;
-			entry.loc = decodeLocation(img, attr);
-			ptr += attr.expr.len;
-			return true;
-		}
-	}
-};
-
 Location findBestFBLoc(const PEImage& img, const DIECursor &parent, unsigned long fblocoff)
 {
 	int regebp = img.isX64() ? 6 : 5;
-	LOCCursor cursor(img, parent, fblocoff);
+	LOCCursor cursor(parent, fblocoff);
 	LOCEntry entry;
 	Location longest = { Location::RegRel, DW_REG_CFA, 0 };
 	unsigned long longest_range = 0;
@@ -803,98 +645,6 @@ void CV2PDB::appendLexicalBlock(DWARF_InfoData& id, unsigned int proclo)
 	cbUdtSymbols += len;
 }
 
-template <typename TFunc>
-void CV2PDB::processRangeList(unsigned long offset, const DIECursor& parent, TFunc &&func)
-{
-	if (parent.cu->version < 5)
-	{
-		// TODO: handle base address selection
-		byte *r = (byte *)img.debug_ranges.base + offset;
-		byte *rend = (byte *)img.debug_ranges.base + img.debug_ranges.length;
-		while (r < rend)
-		{
-			uint64_t pclo = parent.RDAddr(r);
-			uint64_t pchi = parent.RDAddr(r);
-
-			if (!pclo && !pchi)
-			{
-				return;
-			}
-
-			if (pclo >= pchi)
-			{
-				continue;
-			}
-
-			func(pclo + currentBaseAddress, pchi + currentBaseAddress);
-		}
-	}
-	else
-	{
-		uint64_t pclo, pchi, base = currentBaseAddress;
-
-		byte *r = (byte *)img.debug_rnglists.base + offset;
-		byte *rend = r + img.debug_rnglists.length;
-
-		while (r < rend)
-		{
-			byte rle = *r++;
-			if (rle == DW_RLE_end_of_list)
-				break;
-
-			switch (rle)
-			{
-			case DW_RLE_start_length:
-				pclo = parent.RDAddr(r);
-				pchi = pclo + LEB128(r);
-				func(pclo + base, pchi + base);
-				break;
-			case DW_RLE_start_end:
-				pclo = parent.RDAddr(r);
-				pchi = parent.RDAddr(r);
-				func(pclo + base, pchi + base);
-				break;
-
-			case DW_RLE_base_address:
-				base = LEB128(r);
-				break;
-			case DW_RLE_base_addressx: {
-				if (auto* pBase = parent.resolveAddressIndex(LEB128(r))) {
-					base = parent.RDAddr(pBase);
-				}
-				break;
-			}
-			case DW_RLE_startx_endx: {
-				auto* pStart = parent.resolveAddressIndex(LEB128(r));
-				auto* pEnd = parent.resolveAddressIndex(LEB128(r));
-				if (pStart && pEnd) {
-					pclo = parent.RDAddr(pStart);
-					pchi = parent.RDAddr(pEnd);
-					func(pclo + base, pchi + base);
-				}
-			}
-			case DW_RLE_startx_length: {
-				auto* pStart = parent.resolveAddressIndex(LEB128(r));
-				auto len = LEB128(r);
-				if (pStart) {
-					pclo = parent.RDAddr(pStart);
-					pchi = pclo + len;
-					func(pclo + base, pchi + base);
-				}
-			}
-			case DW_RLE_offset_pair:
-				pclo = LEB128(r);
-				pchi = LEB128(r);
-				func(pclo + base, pchi + base);
-				break;
-			default:
-				assert(false && "unknown rnglists value");
-				return;
-			}
-		}
-	}
-}
-
 bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DIECursor cursor)
 {
 	unsigned int pclo = procid.pclo - codeSegOff;
@@ -995,13 +745,13 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DIECursor cursor)
 					{
 						id.pclo = ~0;
 						id.pchi = 0;
-
-						processRangeList(id.ranges, cursor, [&id](uint64_t pclo, uint64_t pchi)
+						RNGEntry entry;
+						RNGCursor rngs(cursor, id.ranges);
+						while (rngs.readNext(entry))
 						{
-							id.pclo = min(id.pclo, pclo);
-							id.pchi = max(id.pchi, pchi);
-						});
-
+							id.pclo = min(id.pclo, entry.pclo);
+							id.pchi = max(id.pchi, entry.pchi);
+						}
 					}
 
 					if (id.hasChild && id.pchi > id.pclo)
@@ -1607,8 +1357,8 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
-			fprintf(stderr, "0x%08zx, level = %d, id.code = %d, id.tag = %d\n",
-			    (unsigned char*)cu + id.entryOff - (unsigned char*)img.debug_info.base, cursor.level, id.code, id.tag);
+			fprintf(stderr, "0x%08x, level = %d, id.code = %d, id.tag = %d\n",
+			    id.entryOff, cursor.level, id.code, id.tag);
 
 			if (id.abstract_origin)
 				mergeAbstractOrigin(id, cursor);
@@ -1688,10 +1438,12 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 						else if (id.ranges != ~0)
 						{
 							entry_point = ~0;
-							processRangeList(id.ranges, cursor, [&entry_point](uint64_t pclo, uint64_t)
+							RNGEntry entry;
+							RNGCursor rngs(cursor, id.ranges);
+							while (rngs.readNext(entry))
 							{
-								entry_point = min(entry_point, pclo);
-							});
+								entry_point = min(entry_point, entry.pclo);
+							}
 
 							if (entry_point == ~0)
 								entry_point = 0;
@@ -1740,10 +1492,12 @@ fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)
 						break;
 					}
 
-					processRangeList(id.ranges, cursor, [this, mod](uint64_t pclo, uint64_t pchi)
+					RNGEntry entry;
+					RNGCursor rngs(cursor, id.ranges);
+					while (rngs.readNext(entry))
 					{
-						addDWARFSectionContrib(mod, pclo - currentBaseAddress, pchi - currentBaseAddress);
-					});
+						addDWARFSectionContrib(mod, entry.pclo - rngs.base, entry.pchi - rngs.base);
+					}
 				}
 #endif
 				break;

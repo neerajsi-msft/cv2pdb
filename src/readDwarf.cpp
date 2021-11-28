@@ -10,6 +10,118 @@ extern "C" {
 	#include "mscvpdb.h"
 }
 
+RNGCursor::RNGCursor(const DIECursor& parent_, unsigned long off)
+	: parent(parent_)
+{
+	isRngLists = false;
+	if (parent.cu->version >= 5) {
+		isRngLists = true;
+	}
+
+	if (isRngLists)
+	{
+		ptr = (byte*)parent.img->debug_rnglists.base;
+		end = ptr + parent.img->debug_rnglists.length;
+		base = parent.cuOffsets->low_pc;
+	} else
+	{
+		ptr = (byte*)parent.img->debug_ranges.base;
+		end = ptr + parent.img->debug_ranges.length;
+		base = 0;
+	}
+
+	ptr += off;
+	default_address_size = parent.img->isX64() ? 8 : 4;
+}
+
+bool RNGCursor::readNext(RNGEntry &entry)
+{
+	if (parent.cu->version < 5)
+	{
+		while (ptr < end)
+		{
+			entry.pclo = parent.RDAddr(ptr);
+			entry.pchi = parent.RDAddr(ptr);
+
+			if (!entry.pclo && !entry.pchi)
+			{
+				return false;
+			}
+
+			if (entry.pclo >= entry.pchi)
+			{
+				continue;
+			}
+
+			entry.addBase(base);
+			return true;
+		}
+
+		return false;
+	}
+	else
+	{
+		while (ptr < end)
+		{
+			byte rle = *ptr++;
+			switch (rle)
+			{
+			case DW_RLE_end_of_list:
+				return false;
+			case DW_RLE_start_length:
+				entry.pclo = parent.RDAddr(ptr);
+				entry.pchi = entry.pclo + LEB128(ptr);
+				return true;
+			case DW_RLE_start_end:
+				entry.pclo = parent.RDAddr(ptr);
+				entry.pchi = parent.RDAddr(ptr);
+				return true;
+
+			case DW_RLE_base_address:
+				base = parent.RDAddr(ptr);
+				break;
+			case DW_RLE_base_addressx: {
+				if (auto* pBase = parent.resolveAddressIndex(LEB128(ptr))) {
+					base = parent.RDAddr(pBase);
+				}
+				break;
+			}
+			case DW_RLE_startx_endx: {
+				auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
+				auto* pEnd = parent.resolveAddressIndex(LEB128(ptr));
+				if (pStart && pEnd) {
+					entry.pclo = parent.RDAddr(pStart);
+					entry.pchi = parent.RDAddr(pEnd);
+					return true;
+				}
+				break;
+			}
+			case DW_RLE_startx_length: {
+				auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
+				auto len = LEB128(ptr);
+				if (pStart) {
+					entry.pclo = parent.RDAddr(pStart);
+					entry.pchi = entry.pclo + len;
+					return true;
+				}
+				break;
+			}
+			case DW_RLE_offset_pair:
+				entry.pclo = LEB128(ptr);
+				entry.pchi = LEB128(ptr);
+				entry.addBase(base);
+				return true;
+			default:
+				fprintf(stderr, "ERROR: Unknown rnglist entry value: %d, offs=0x%x\n", rle, parent.img->debug_rnglists.sectOff(ptr - 1));
+				assert(false && "unknown rnglists value");
+				return false;
+			}
+		}
+
+		return false;
+	}
+}
+
 static Location mkInReg(unsigned reg)
 {
 	Location l;
@@ -35,6 +147,137 @@ static Location mkRegRel(int reg, int off)
 	l.reg = reg;
 	l.off = off;
 	return l;
+}
+
+LOCCursor::LOCCursor(const DIECursor& parent_, unsigned long off)
+	: parent(parent_)
+{
+	isLocLists = false;
+	if (parent.cu->version >= 5) {
+		isLocLists = true;
+	}
+
+	if (isLocLists)
+	{
+		ptr = (byte*)parent.img->debug_loclists.base;
+		end = ptr + parent.img->debug_loclists.length;
+		base = parent.cuOffsets->loclist_base_offset;
+		off += base;
+	} else
+	{
+		ptr = (byte*)parent.img->debug_loc.base;
+		end = ptr + parent.img->debug_loc.length;
+		base = 0;
+	}
+
+	ptr += off;
+	default_address_size = parent.img->isX64() ? 8 : 4;
+}
+
+bool LOCCursor::readNext(LOCEntry& entry)
+{
+	if (ptr >= end)
+		return false;
+	if (isLocLists)
+	{
+		while (ptr < end) {
+			byte type = *ptr++;
+			switch (type) {
+			case DW_LLE_end_of_list:
+				return false;
+			case DW_LLE_base_addressx:
+				if (auto* pBase = parent.resolveAddressIndex(LEB128(ptr))) {
+					base = parent.RDAddr(pBase);
+				}
+				continue;
+			case DW_LLE_startx_endx: {
+				auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
+				auto* pEnd = parent.resolveAddressIndex(LEB128(ptr));
+				if (pStart && pEnd) {
+					entry.beg_offset = parent.RDAddr(pStart);
+					entry.end_offset = parent.RDAddr(pEnd);
+					goto decode_counted_loc;
+				} else {
+					goto skip_counted_loc;
+				}
+			}
+			case DW_LLE_startx_length: {
+				auto* pStart = parent.resolveAddressIndex(LEB128(ptr));
+				auto len = LEB128(ptr);
+				if (pStart) {
+					entry.beg_offset = parent.RDAddr(pStart);
+					entry.end_offset = entry.beg_offset + len;
+					goto decode_counted_loc;
+				} else {
+					goto skip_counted_loc;
+				}
+			}
+			case DW_LLE_offset_pair:
+				entry.beg_offset = base + LEB128(ptr);
+				entry.end_offset = base + LEB128(ptr);
+				goto decode_counted_loc;
+
+			case DW_LLE_default_location:
+				entry.beg_offset = 0;
+				entry.end_offset = 0;
+				entry.isDefault = true;
+				goto decode_counted_loc;
+
+			case DW_LLE_base_address:
+				base = parent.RDAddr(ptr);
+				continue;
+
+			case DW_LLE_start_end:
+				entry.beg_offset = parent.RDAddr(ptr);
+				entry.end_offset = parent.RDAddr(ptr);
+				goto decode_counted_loc;
+
+			case DW_LLE_start_length:
+				entry.beg_offset = parent.RDAddr(ptr);
+				entry.end_offset = entry.beg_offset + LEB128(ptr);
+				goto decode_counted_loc;
+
+			case DW_LLE_view_pair:
+				LEB128(ptr);
+				LEB128(ptr);
+				continue;
+
+			default:
+				assert(false && "unknown loclists value");
+				return false;
+			}
+skip_counted_loc:
+			auto len = LEB128(ptr);
+			ptr += len;
+		}
+
+		return false;
+
+decode_counted_loc:
+		auto len = LEB128(ptr);
+
+		DWARF_Attribute attr;
+		attr.type = Block;
+		attr.block.len = RD2(ptr);
+		attr.block.ptr = ptr;
+		entry.loc = decodeLocation(*parent.img, attr);
+		ptr += len;
+		return true;
+	} else
+	{
+		entry.beg_offset = (unsigned long)RDsize(ptr, default_address_size);
+		entry.end_offset = (unsigned long)RDsize(ptr, default_address_size);
+		if (entry.eol())
+			return false;
+
+		DWARF_Attribute attr;
+		attr.type = Block;
+		attr.block.len = RD2(ptr);
+		attr.block.ptr = ptr;
+		entry.loc = decodeLocation(*parent.img, attr);
+		ptr += attr.expr.len;
+		return true;
+	}
 }
 
 Location decodeLocation(const PEImage& img, const DWARF_Attribute& attr, const Location* frameBase, int at)
@@ -418,9 +661,9 @@ fprintf(stderr, "%s:%d: HERE, level: %d, cu->version: %d\n", __FILE__, __LINE__,
 			return false; // root of the tree does not have a null terminator, but we know the length
 
 		id.entryPtr = ptr;
-		id.entryOff = (unsigned int)(ptr - (byte*)cu);
+		id.entryOff = img->debug_info.sectOff(ptr);
 		id.code = LEB128(ptr);
-fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
+fprintf(stderr, "%s:%d: HERE, id.code: %d, id.entryOff: %x\n", __FILE__, __LINE__, (int)id.code, id.entryOff);
 		if (id.code == 0)
 		{
 			--level; // pop up one level
@@ -437,9 +680,11 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 
 	byte* abbrev = getDWARFAbbrev(cu->debug_abbrev_offset, id.code);
 // fprintf(stderr, "%s:%d: dwarf abbrev: %s\n", __FILE__, __LINE__, (const char *)abbrev);
-	assert(abbrev);
-	if (!abbrev)
+	if (!abbrev) {
+		fprintf(stderr, "unknown abbrev: num=%d off=%x\n", id.code, id.entryOff);
+		assert(abbrev);
 		return false;
+	}
 
 	id.abbrev = abbrev;
 	id.tag = LEB128(abbrev);
@@ -454,8 +699,12 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 		if (attr == 0 && form == 0)
 			break;
 
-		while (form == DW_FORM_indirect)
+		fprintf(stderr, "%s:%d: HERE, attr=%d, form=%d, offs=%x\n", __FILE__, __LINE__, attr, form, img->debug_info.sectOff(ptr));
+
+		while (form == DW_FORM_indirect) {
 			form = LEB128(ptr);
+			fprintf(stderr, "%s:%d: HERE, attr=%d, form=%d\n", __FILE__, __LINE__, attr, form);
+		}
 
 		DWARF_Attribute a;
 		switch (form)
@@ -484,6 +733,7 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 			case DW_FORM_data2:          a.type = Const; a.cons = RD2(ptr); break;
 			case DW_FORM_data4:          a.type = Const; a.cons = RD4(ptr); break;
 			case DW_FORM_data8:          a.type = Const; a.cons = RD8(ptr); break;
+			case DW_FORM_data16:         a.type = Const16; memcpy(a.cons16, ptr, 16); ptr += 16; break;
 			case DW_FORM_sdata:          a.type = Const; a.cons = SLEB128(ptr); break;
 			case DW_FORM_udata:          a.type = Const; a.cons = LEB128(ptr); break;
 			case DW_FORM_string:         a.type = String; a.string = (const char*)ptr; ptr += strlen(a.string) + 1; break;
@@ -500,9 +750,11 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d\n", __FILE__, __LINE__, (int)id.code);
 			case DW_FORM_exprloc:        a.type = ExprLoc; a.expr.len = LEB128(ptr); a.expr.ptr = ptr; ptr += a.expr.len; break;
 			case DW_FORM_sec_offset:     a.type = SecOffset;  a.sec_offset = cu->isDWARF64() ? RD8(ptr) : RD4(ptr); break;
 			case DW_FORM_line_strp:      a.type = String; a.string = (const char*)img->debug_line_str.base + (cu->isDWARF64() ? RD8(ptr) : RD4(ptr)); break;
-			case DW_FORM_implicit_const: a.type = Const; a.cons = LEB128(ptr); a.cons = LEB128(ptr); break;
-			case DW_FORM_indirect:
-			default: assert(false && "Unsupported DWARF attribute form"); return false;
+			case DW_FORM_implicit_const: a.type = Const; a.cons = LEB128(abbrev); break;
+			default:
+				fprintf(stderr, "Unsupported DWARF attribute form offs=%x %d for tag %d (abbrev %d)", id.entryOff, form, id.tag, id.code);
+				assert(false && "Unsupported DWARF attribute form");
+				return false;
 		}
 
 		switch (attr)

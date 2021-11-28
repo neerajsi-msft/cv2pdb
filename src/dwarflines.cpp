@@ -122,7 +122,7 @@ bool _flushDWARFLines(const PEImage& img, mspdb::Mod* mod, DWARF_LineState& stat
 
 	if (dump)
 		printf("AddLines(%08x+%04x, Line=%4d+%3d, %s)\n", low_offset, address_range_length, low_line,
-		       state.lineInfo.size(), fname.c_str());
+		       (unsigned int)state.lineInfo.size(), fname.c_str());
 	rc = mod->AddLines(fname.c_str(), segIndex + 1, low_offset, address_range_length, low_offset, low_line,
 	                   (unsigned char*)&state.lineInfo[0],
 	                   state.lineInfo.size() * sizeof(state.lineInfo[0]));

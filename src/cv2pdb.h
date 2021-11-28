@@ -189,9 +189,6 @@ public:
 	bool mapTypes();
 	bool createTypes();
 
-	template <typename TFunc>
-	void processRangeList(unsigned long offset, const DIECursor& parent, TFunc &&func);
-
 // private:
 	BYTE* libraries;
 

@@ -43,6 +43,11 @@ struct PESection
 		auto pInt = (uintptr_t)p;
 		return (pInt >= (uintptr_t)base && pInt < (uintptr_t)base + length);
 	}
+
+	unsigned int sectOff(void *p) const
+	{
+		return (unsigned int)((uintptr_t)p - (uintptr_t)base);
+	}
 };
 
 #define IMGHDR(x) (hdr32 ? hdr32->x : hdr64->x)
