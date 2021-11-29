@@ -10,6 +10,17 @@ extern "C" {
 	#include "mscvpdb.h"
 }
 
+PEImage* DIECursor::img;
+abbrevMap_t DIECursor::abbrevMap;
+DebugLevel DIECursor::debug;
+
+void DIECursor::setContext(PEImage* img_, DebugLevel debug_)
+{
+	img = img_;
+	debug = debug_;
+	abbrevMap.clear();
+}
+
 RNGCursor::RNGCursor(const DIECursor& parent_, unsigned long off)
 	: parent(parent_)
 {
@@ -22,7 +33,7 @@ RNGCursor::RNGCursor(const DIECursor& parent_, unsigned long off)
 	{
 		ptr = (byte*)parent.img->debug_rnglists.base;
 		end = ptr + parent.img->debug_rnglists.length;
-		base = parent.cuOffsets->low_pc;
+		base = parent.cuOffsets->base_address;
 	} else
 	{
 		ptr = (byte*)parent.img->debug_ranges.base;
@@ -112,7 +123,8 @@ bool RNGCursor::readNext(RNGEntry &entry)
 				entry.addBase(base);
 				return true;
 			default:
-				fprintf(stderr, "ERROR: Unknown rnglist entry value: %d, offs=0x%x\n", rle, parent.img->debug_rnglists.sectOff(ptr - 1));
+				fprintf(stderr, "ERROR: %s:%d: Unknown rnglist entry value: %d, offs=0x%x DIEOffset=0x%x\n", __FUNCTION__, __LINE__,
+						rle, parent.img->debug_rnglists.sectOff(ptr - 1), parent.entryOff);
 				assert(false && "unknown rnglists value");
 				return false;
 			}
@@ -178,10 +190,14 @@ bool LOCCursor::readNext(LOCEntry& entry)
 {
 	if (ptr >= end)
 		return false;
+
+
 	if (isLocLists)
 	{
+		byte type = 0;
 		while (ptr < end) {
-			byte type = *ptr++;
+			entry.ptr = ptr;
+			type = *ptr++;
 			switch (type) {
 			case DW_LLE_end_of_list:
 				return false;
@@ -255,6 +271,12 @@ skip_counted_loc:
 
 decode_counted_loc:
 		auto len = LEB128(ptr);
+
+		if (parent.debug & DbgDwarfLocLists)
+			fprintf(stderr, "%s:%d: reading loclist entry at offs=%x, type=%d, len=%d, parentOffs=%x\n", __FUNCTION__, __LINE__,
+					parent.img->debug_loclists.sectOff(entry.ptr), type, len, parent.entryOff);
+
+
 
 		DWARF_Attribute attr;
 		attr.type = Block;
@@ -562,15 +584,6 @@ void mergeSpecification(DWARF_InfoData& id, const DIECursor& parent)
 	id.merge(idspec);
 }
 
-PEImage* DIECursor::img;
-abbrevMap_t DIECursor::abbrevMap;
-
-void DIECursor::setContext(PEImage* img_)
-{
-	img = img_;
-	abbrevMap.clear();
-}
-
 byte* DIECursor::resolveAddressIndex(unsigned long idx) const
 {
 	auto addrSize = cu->address_size == 4 ? 4 : 8;
@@ -645,7 +658,6 @@ DIECursor DIECursor::getSubtreeCursor()
 
 bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 {
-fprintf(stderr, "%s:%d: HERE\n", __FILE__, __LINE__);
 	id.clear();
 
 	if (hasChild)
@@ -653,7 +665,6 @@ fprintf(stderr, "%s:%d: HERE\n", __FILE__, __LINE__);
 
 	for (;;)
 	{
-fprintf(stderr, "%s:%d: HERE, level: %d, cu->version: %d\n", __FILE__, __LINE__, (int)level, (int)cu->version);
 		if (level == -1)
 			return false; // we were already at the end of the subtree
 
@@ -661,9 +672,8 @@ fprintf(stderr, "%s:%d: HERE, level: %d, cu->version: %d\n", __FILE__, __LINE__,
 			return false; // root of the tree does not have a null terminator, but we know the length
 
 		id.entryPtr = ptr;
-		id.entryOff = img->debug_info.sectOff(ptr);
+		entryOff = img->debug_info.sectOff(ptr);
 		id.code = LEB128(ptr);
-fprintf(stderr, "%s:%d: HERE, id.code: %d, id.entryOff: %x\n", __FILE__, __LINE__, (int)id.code, id.entryOff);
 		if (id.code == 0)
 		{
 			--level; // pop up one level
@@ -679,16 +689,19 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d, id.entryOff: %x\n", __FILE__, __LINE_
 	}
 
 	byte* abbrev = getDWARFAbbrev(cu->debug_abbrev_offset, id.code);
-// fprintf(stderr, "%s:%d: dwarf abbrev: %s\n", __FILE__, __LINE__, (const char *)abbrev);
 	if (!abbrev) {
-		fprintf(stderr, "unknown abbrev: num=%d off=%x\n", id.code, id.entryOff);
+		fprintf(stderr, "ERROR: %s:%d: unknown abbrev: num=%d off=%x\n", __FUNCTION__, __LINE__, id.code, entryOff);
 		assert(abbrev);
 		return false;
 	}
 
+
 	id.abbrev = abbrev;
 	id.tag = LEB128(abbrev);
 	id.hasChild = *abbrev++;
+	
+	if (debug & DbgDwarfAttrRead)
+		fprintf(stderr, "%s:%d: offs=%d level=%d tag=%d abbrev=%d\n", __FUNCTION__, __LINE__, entryOff, level, id.tag, id.code);
 
 	int attr, form;
 	for (;;)
@@ -699,11 +712,13 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d, id.entryOff: %x\n", __FILE__, __LINE_
 		if (attr == 0 && form == 0)
 			break;
 
-		fprintf(stderr, "%s:%d: HERE, attr=%d, form=%d, offs=%x\n", __FILE__, __LINE__, attr, form, img->debug_info.sectOff(ptr));
+		if (debug & DbgDwarfAttrRead)
+			fprintf(stderr, "%s:%d: offs=%x, attr=%d, form=%d\n", __FUNCTION__, __LINE__, attr, form, img->debug_info.sectOff(ptr));
 
 		while (form == DW_FORM_indirect) {
 			form = LEB128(ptr);
-			fprintf(stderr, "%s:%d: HERE, attr=%d, form=%d\n", __FILE__, __LINE__, attr, form);
+			if (debug & DbgDwarfAttrRead)
+				fprintf(stderr, "%s:%d: attr=%d, form=%d\n", __FUNCTION__, __LINE__, attr, form);
 		}
 
 		DWARF_Attribute a;
@@ -752,7 +767,8 @@ fprintf(stderr, "%s:%d: HERE, id.code: %d, id.entryOff: %x\n", __FILE__, __LINE_
 			case DW_FORM_line_strp:      a.type = String; a.string = (const char*)img->debug_line_str.base + (cu->isDWARF64() ? RD8(ptr) : RD4(ptr)); break;
 			case DW_FORM_implicit_const: a.type = Const; a.cons = LEB128(abbrev); break;
 			default:
-				fprintf(stderr, "Unsupported DWARF attribute form offs=%x %d for tag %d (abbrev %d)", id.entryOff, form, id.tag, id.code);
+				fprintf(stderr, "ERROR: %s:%d: Unsupported DWARF attribute form offs=%x %d for tag %d (abbrev %d)", __FUNCTION__, __LINE__,
+						entryOff, form, id.tag, id.code);
 				assert(false && "Unsupported DWARF attribute form");
 				return false;
 		}

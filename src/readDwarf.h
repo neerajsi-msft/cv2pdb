@@ -1,6 +1,7 @@
 #ifndef __READDWARF_H__
 #define __READDWARF_H__
 
+#include <Windows.h>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -10,6 +11,17 @@
 typedef unsigned char byte;
 class PEImage;
 class DIECursor;
+
+enum DebugLevel : unsigned {
+	DbgBasic = 0x1,
+	DbgPdbTypes = 0x2,
+	DbgPdbSyms = 0x4,
+	DbgDwarfTagRead = 0x10,
+	DbgDwarfAttrRead = 0x20,
+	DbgDwarfLocLists = 0x40,
+};
+
+DEFINE_ENUM_FLAG_OPERATORS(DebugLevel);
 
 inline unsigned int LEB128(byte* &p)
 {
@@ -155,7 +167,6 @@ struct DWARF_FileName
 struct DWARF_InfoData
 {
 	byte* entryPtr;
-	unsigned entryOff; // offset in the debug_info section
 	int code;
 	byte* abbrev;
 	int tag;
@@ -462,7 +473,7 @@ struct CompilationUnitOffsets
 	unsigned long str_base_offset;
 	unsigned long addr_base_offset;
 	unsigned long loclist_base_offset;
-	unsigned long low_pc;
+	unsigned long base_address;
 };
 
 // Attempts to partially evaluate DWARF location expressions.
@@ -496,10 +507,12 @@ public:
 	DWARF_CompilationUnit* cu;
 	CompilationUnitOffsets *cuOffsets;
 	byte* ptr;
+	unsigned entryOff;
 	int level;
 	bool hasChild; // indicates whether the last read DIE has children
 	byte* sibling;
 
+	static DebugLevel debug;
 	static PEImage* img;
 	static abbrevMap_t abbrevMap;
 
@@ -507,7 +520,7 @@ public:
 
 public:
 
-	static void setContext(PEImage* img_);
+	static void setContext(PEImage* img_, DebugLevel debug);
 
 	// Create a new DIECursor
 	DIECursor(DWARF_CompilationUnit* cu_, CompilationUnitOffsets* cuOffsets_, byte* ptr_);

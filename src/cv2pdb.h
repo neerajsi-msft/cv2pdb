@@ -29,7 +29,7 @@ class CFIIndex;
 class CV2PDB : public LastError
 {
 public:
-	CV2PDB(PEImage& image);
+	CV2PDB(PEImage& image, DebugLevel debug);
 	~CV2PDB();
 
 	bool cleanup(bool commit);
@@ -264,7 +264,7 @@ public:
 	bool useGlobalMod;
 	bool thisIsNotRef;
 	bool v3;
-	bool debug;
+	DebugLevel debug;
 	const char* lastError;
 
 	int srcLineSections;
@@ -279,11 +279,6 @@ public:
 	// Default lower bound for the current compilation unit. This depends on
 	// the language of the current unit.
 	unsigned currentDefaultLowerBound;
-
-	// Value of the DW_AT_low_pc attribute for the current compilation unit.
-	// Specify the default base address for use in location lists and range
-	// lists.
-	uint32_t currentBaseAddress;
 };
 
 #endif //__CV2PDB_H__

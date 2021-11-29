@@ -655,6 +655,9 @@ bool CV2PDB::addDWARFProc(DWARF_InfoData& procid, DIECursor cursor)
 
 	checkUdtSymbolAlloc(100 + kMaxNameLen);
 
+	if (debug & DbgPdbSyms)
+		fprintf(stderr, "%s:%d: Adding a proc: %s at %x\n", __FUNCTION__, __LINE__, procid.name, pclo);
+
 	// GLOBALPROC
 	codeview_symbol*cvs = (codeview_symbol*) (udtSymbols + cbUdtSymbols);
 	cvs->proc_v2.id = v3 ? S_GPROC_V3 : S_GPROC_V2;
@@ -1333,6 +1336,9 @@ bool CV2PDB::mapTypes()
 		off += sizeof(cu->unit_length) + cu->unit_length;
 	}
 
+	if (debug & DbgBasic)
+		fprintf(stderr, "%s:%d: mapped %zd types\n", __FUNCTION__, __LINE__, mapOffsetToType.size());
+
 	nextDwarfType = typeID;
 	return true;
 }
@@ -1344,7 +1350,9 @@ bool CV2PDB::createTypes()
 	int typeID = nextUserType;
 	int pointerAttr = img.isX64() ? 0x1000C : 0x800A;
 
-fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
+	if (debug & DbgBasic)
+		fprintf(stderr, "%s:%d: createTypes()\n", __FUNCTION__, __LINE__);
+
 	unsigned long off = 0;
 	while (off < img.debug_info.length)
 	{
@@ -1357,8 +1365,9 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 		DWARF_InfoData id;
 		while (cursor.readNext(id))
 		{
-			fprintf(stderr, "0x%08x, level = %d, id.code = %d, id.tag = %d\n",
-			    id.entryOff, cursor.level, id.code, id.tag);
+			if (debug & DbgDwarfTagRead)
+				fprintf(stderr, "%s:%d: 0x%08x, level = %d, id.code = %d, id.tag = %d\n", __FUNCTION__, __LINE__,
+						cursor.entryOff, cursor.level, id.code, id.tag);
 
 			if (id.abstract_origin)
 				mergeAbstractOrigin(id, cursor);
@@ -1449,9 +1458,13 @@ fprintf(stderr, "%s:%d: createTypes()\n", __FILE__, __LINE__);
 								entry_point = 0;
 						}
 
-fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)id.name, entry_point);
 						if (entry_point)
+						{
+							if (debug & DbgPdbSyms)
+								fprintf(stderr, "%s:%d: Adding a public: %s at %x\n", __FUNCTION__, __LINE__, id.name, entry_point);
+
 							mod->AddPublic2(id.name, img.codeSegment + 1, entry_point - codeSegOff, 0);
+						}
 					}
 
 					if (id.pclo && id.pchi)
@@ -1460,8 +1473,7 @@ fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)
 				break;
 
 			case DW_TAG_compile_unit:
-				currentBaseAddress = id.pclo;
-				offsets.low_pc = id.pclo;
+				offsets.base_address = id.pclo;
 
 				switch (id.language)
 				{
@@ -1496,6 +1508,9 @@ fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)
 					RNGCursor rngs(cursor, id.ranges);
 					while (rngs.readNext(entry))
 					{
+						if (!offsets.base_address)
+							offsets.base_address = entry.pclo;
+
 						addDWARFSectionContrib(mod, entry.pclo - rngs.base, entry.pchi - rngs.base);
 					}
 				}
@@ -1537,7 +1552,6 @@ fprintf(stderr, "%s:%d: AddPublic2 %s %lu\n", __FILE__, __LINE__, (const char *)
 							type = nextDwarfType++;
 						}
 						appendGlobalVar(id.name, type, seg + 1, segOff);
-fprintf(stderr, "%s:%d: AddPublic2 %s\n", __FILE__, __LINE__, (const char *)id.name);
 						int rc = mod->AddPublic2(id.name, seg + 1, segOff, type);
 					}
 				}
@@ -1605,7 +1619,7 @@ bool CV2PDB::createDWARFModules()
 		appendComplex(0x52, 0x42, 12, "creal");
 	}
 
-	DIECursor::setContext(&img);
+	DIECursor::setContext(&img, debug);
 
 	countEntries = 0;
 	if (!mapTypes())
@@ -1661,7 +1675,6 @@ bool CV2PDB::addDWARFPublics()
 {
 	mspdb::Mod* mod = globalMod();
 
-fprintf(stderr, "%s:%d: DWARF Publics\n", __FILE__, __LINE__);
 	int type = 0;
 	int rc = mod->AddPublic2("public_all", img.codeSegment + 1, 0, 0x1000);
 	if (rc <= 0)
