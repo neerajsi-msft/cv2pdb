@@ -315,31 +315,31 @@ Location decodeLocation(const PEImage& img, const DWARF_Attribute& attr, const L
 	return stack[0];
 }
 
-void mergeAbstractOrigin(DWARF_InfoData& id, DWARF_CompilationUnit* cu)
+void mergeAbstractOrigin(DWARF_InfoData& id, const DIECursor& parent)
 {
-	DIECursor specCursor(cu, id.abstract_origin);
+	DIECursor specCursor(parent, id.abstract_origin);
 	DWARF_InfoData idspec;
 	specCursor.readNext(idspec);
 	// assert seems invalid, combination DW_TAG_member and DW_TAG_variable found in the wild
 	// assert(id.tag == idspec.tag);
 	if (idspec.abstract_origin)
-		mergeAbstractOrigin(idspec, cu);
+		mergeAbstractOrigin(idspec, parent);
 	if (idspec.specification)
-		mergeSpecification(idspec, cu);
+		mergeSpecification(idspec, parent);
 	id.merge(idspec);
 }
 
-void mergeSpecification(DWARF_InfoData& id, DWARF_CompilationUnit* cu)
+void mergeSpecification(DWARF_InfoData& id, const DIECursor& parent)
 {
-	DIECursor specCursor(cu, id.specification);
+	DIECursor specCursor(parent, id.specification);
 	DWARF_InfoData idspec;
 	specCursor.readNext(idspec);
 	//assert seems invalid, combination DW_TAG_member and DW_TAG_variable found in the wild
 	//assert(id.tag == idspec.tag);
 	if (idspec.abstract_origin)
-		mergeAbstractOrigin(idspec, cu);
+		mergeAbstractOrigin(idspec, parent);
 	if (idspec.specification)
-		mergeSpecification(idspec, cu);
+		mergeSpecification(idspec, parent);
 	id.merge(idspec);
 }
 
@@ -352,6 +352,11 @@ DIECursor::DIECursor(DWARF_CompilationUnit* cu_, byte* ptr_)
 	sibling = 0;
 }
 
+DIECursor::DIECursor(const DIECursor& parent, byte* ptr_)
+	: DIECursor(parent)
+{
+	ptr = ptr_;
+}
 
 void DIECursor::gotoSibling()
 {
@@ -476,7 +481,7 @@ bool DIECursor::readNext(DWARF_InfoData& id, bool stopAtNull)
 			case DW_FORM_sdata:          a.type = Const; a.cons = SLEB128(ptr); break;
 			case DW_FORM_udata:          a.type = Const; a.cons = LEB128(ptr); break;
 			case DW_FORM_string:         a.type = String; a.string = (const char*)ptr; ptr += strlen(a.string) + 1; break;
-            case DW_FORM_strp:           a.type = String; a.string = (const char*)(img->debug_str.base + RDsize(ptr, cu->isDWARF64() ? 8 : 4)); break;
+			case DW_FORM_strp:           a.type = String; a.string = (const char*)(img->debug_str.base + RDsize(ptr, cu->isDWARF64() ? 8 : 4)); break;
 			case DW_FORM_flag:           a.type = Flag; a.flag = (*ptr++ != 0); break;
 			case DW_FORM_flag_present:   a.type = Flag; a.flag = true; break;
 			case DW_FORM_ref1:           a.type = Ref; a.ref = (byte*)cu + *ptr++; break;
