@@ -34,6 +34,39 @@ void DIECursor::setContext(PEImage* img_, DebugLevel debug_)
 	debug = debug_;
 }
 
+byte* DWARF_CompilationUnitInfo::read(const PEImage& img, unsigned long *off)
+{
+	byte *ptr = (byte*)img.debug_info.base + *off;
+
+	cu_offset = *off;
+	is_dwarf64 = false;
+	base_address = 0;
+	unit_length = RD4(ptr);
+	if (unit_length == ~0) {
+		// DWARF64 doesn't make sense in the context of the PE format since the
+		// section size is limited to 32 bits.
+		fprintf(stderr, "%s:%d: WARNING: DWARF64 compilation unit at offset=%x is not supported\n", __FUNCTION__, __LINE__,
+				cu_offset);
+
+		uint64_t len64 = RD8(ptr);
+		*off = img.debug_info.sectOff(ptr + (intptr_t)len64);
+		return nullptr;
+	}
+
+	*off = img.debug_info.sectOff(ptr + unit_length);
+	version = RD2(ptr);
+	if (version >= 5) {
+		fprintf(stderr, "%s:%d: WARNING: Unsupported dwarf version %d for compilation unit at offset=%x\n", __FUNCTION__, __LINE__,
+				version, cu_offset);
+
+		return nullptr;
+	}
+
+	debug_abbrev_offset = RD4(ptr);
+	address_size = *ptr++;
+	return ptr;
+}
+
 static Location mkInReg(unsigned reg)
 {
 	Location l;
@@ -61,7 +94,7 @@ static Location mkRegRel(int reg, int off)
 	return l;
 }
 
-Location decodeLocation(const PEImage& img, const DWARF_Attribute& attr, const Location* frameBase, int at)
+Location decodeLocation(const DWARF_Attribute& attr, const Location* frameBase, int at)
 {
 	static Location invalid = { Location::Invalid };
 
@@ -343,7 +376,66 @@ void mergeSpecification(DWARF_InfoData& id, const DIECursor& parent)
 	id.merge(idspec);
 }
 
-DIECursor::DIECursor(DWARF_CompilationUnit* cu_, byte* ptr_)
+LOCCursor::LOCCursor(const DIECursor& parent, unsigned long off)
+	: parent(parent)
+	, end((byte*)parent.img->debug_loc.base + parent.img->debug_loc.length)
+	, ptr((byte*)parent.img->debug_loc.base + off)
+{
+}
+
+bool LOCCursor::readNext(LOCEntry& entry)
+{
+	if (ptr >= end)
+		return false;
+
+	if (parent.debug & DbgDwarfLocLists)
+		fprintf(stderr, "%s:%d: loclist off=%x DIEoff=%x:\n", __FUNCTION__, __LINE__,
+				parent.img->debug_loc.sectOff(ptr), parent.entryOff);
+
+	entry.beg_offset = (unsigned long) parent.RDAddr(ptr);
+	entry.end_offset = (unsigned long) parent.RDAddr(ptr);
+	if (entry.eol())
+		return false;
+
+	DWARF_Attribute attr;
+	attr.type = Block;
+	attr.block.len = RD2(ptr);
+	attr.block.ptr = ptr;
+	entry.loc = decodeLocation(attr);
+	ptr += attr.expr.len;
+	return true;
+}
+
+RangeCursor::RangeCursor(const DIECursor& parent, unsigned long off)
+	: parent(parent)
+	, end((byte*)parent.img->debug_ranges.base + parent.img->debug_ranges.length)
+	, ptr((byte*)parent.img->debug_ranges.base + off)
+{
+}
+
+bool RangeCursor::readNext(RangeEntry& entry)
+{
+	while (ptr < end) {
+		if (parent.debug & DbgDwarfRangeLists)
+			fprintf(stderr, "%s:%d: rangelist off=%x DIEoff=%x:\n", __FUNCTION__, __LINE__,
+					parent.img->debug_ranges.sectOff(ptr), parent.entryOff);
+
+		entry.pclo = parent.RDAddr(ptr);
+		entry.pchi = parent.RDAddr(ptr);
+		if (!entry.pclo && !entry.pchi)
+			return false;
+
+		if (entry.pclo >= entry.pchi)
+			continue;
+
+		entry.addBase(parent.cu->base_address);
+		return true;
+	}
+
+	return false;
+}
+
+DIECursor::DIECursor(DWARF_CompilationUnitInfo* cu_, byte* ptr_)
 {
 	cu = cu_;
 	ptr = ptr_;

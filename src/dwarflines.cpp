@@ -169,8 +169,13 @@ bool addLineInfo(const PEImage& img, mspdb::Mod* mod, DWARF_LineState& state)
 
 bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod, DebugLevel debug_)
 {
-	DWARF_CompilationUnit* cu = (DWARF_CompilationUnit*)img.debug_info.base;
-	int ptrsize = cu ? cu->address_size : 4;
+	DWARF_CompilationUnitInfo cu{};
+
+	if (!cu.read(img, 0)) {
+		return false;
+	}
+
+	int ptrsize = cu.address_size;
 
     debug = debug_;
 
@@ -217,6 +222,10 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod, DebugLevel debug_)
 		int hdrlength = hdr->version <= 3 ? sizeof(DWARF2_LineNumberProgramHeader) : hdr->version == 4 ? sizeof(DWARF4_LineNumberProgramHeader) : sizeof(DWARF_LineNumberProgramHeader);
 		unsigned char* p = (unsigned char*) hdrver + hdrlength;
 		unsigned char* end = (unsigned char*) hdrver + length;
+
+		if (debug & DbgDwarfLines)
+			fprintf(stderr, "%s%d: LineNumberProgramHeader offs=%x ver=%d\n", __FUNCTION__, __LINE__,
+					off, hdr->version);
 
 		std::vector<unsigned int> opcode_lengths;
 		opcode_lengths.resize(hdr->opcode_base);
@@ -276,7 +285,7 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod, DebugLevel debug_)
 							{
 							case DW_FORM_line_strp:
 							{
-								size_t offset = cu->isDWARF64() ? RD8(p) : RD4(p);
+								size_t offset = cu.isDWARF64() ? RD8(p) : RD4(p);
 								state.include_dirs.push_back(img.debug_line_str.base + offset);
 								break;
 							}
@@ -318,7 +327,7 @@ bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod, DebugLevel debug_)
 							{
 							case DW_FORM_line_strp:
 							{
-								size_t offset = cu->isDWARF64() ? RD8(p) : RD4(p);
+								size_t offset = cu.isDWARF64() ? RD8(p) : RD4(p);
 								fname.file_name = img.debug_line_str.base + offset;
 								break;
 							}
