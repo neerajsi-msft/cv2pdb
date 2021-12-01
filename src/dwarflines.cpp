@@ -169,15 +169,15 @@ bool addLineInfo(const PEImage& img, mspdb::Mod* mod, DWARF_LineState& state)
 
 bool interpretDWARFLines(const PEImage& img, mspdb::Mod* mod, DebugLevel debug_)
 {
+    debug = debug_;
+
 	DWARF_CompilationUnitInfo cu{};
 
-	if (!cu.read(img, 0)) {
+	if (!cu.read(debug, img, 0)) {
 		return false;
 	}
 
 	int ptrsize = cu.address_size;
-
-    debug = debug_;
 
 	DWARF_LineNumberProgramHeader hdr5;
 	for(unsigned long off = 0; off < img.debug_line.length; )
